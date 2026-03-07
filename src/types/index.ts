@@ -34,6 +34,23 @@ export interface ExtractedBlock {
   }
   sourceUrl: string
   thumbnail?: string
+  genre: string
+  tags: string[]
+}
+
+export interface SavedPart {
+  id: string
+  type: string
+  confidence: number
+  html: string
+  textContent: string
+  tagName: string
+  thumbnail?: string
+  genre: string
+  tags: string[]
+  meta: Record<string, any>
+  sourceUrl: string
+  savedAt: string
 }
 
 export interface CanvasBlock {
@@ -42,8 +59,7 @@ export interface CanvasBlock {
   order: number
 }
 
-export interface ProjectState {
-  parts: ExtractedBlock[]
-  canvas: CanvasBlock[]
-  sourceUrls: string[]
+export interface GenreInfo {
+  genre: string
+  count: number
 }

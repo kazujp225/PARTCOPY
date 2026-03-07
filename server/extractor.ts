@@ -311,19 +311,25 @@ export async function extractParts(url: string) {
         // Screenshot failed, continue without thumbnail
       }
 
-      // Convert relative URLs to absolute in HTML
+      // Strip third-party images: replace <img> with placeholder, remove background-image
+      let cleanHtml = section.outerHTML
+        // Replace <img> tags with a placeholder div preserving layout
+        .replace(/<img\b[^>]*>/gi, '<div class="pc-img-placeholder" style="background:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:80px;color:#94a3b8;font-size:13px;border-radius:4px;">IMAGE</div>')
+        // Remove <picture> and <video> elements entirely, leave placeholder
+        .replace(/<picture\b[^>]*>[\s\S]*?<\/picture>/gi, '<div class="pc-img-placeholder" style="background:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:80px;color:#94a3b8;font-size:13px;border-radius:4px;">IMAGE</div>')
+        .replace(/<video\b[^>]*>[\s\S]*?<\/video>/gi, '<div class="pc-img-placeholder" style="background:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:80px;color:#94a3b8;font-size:13px;border-radius:4px;">VIDEO</div>')
+        // Remove inline background-image styles
+        .replace(/background-image\s*:\s*url\([^)]*\)\s*;?/gi, '')
+        // Remove SVG inline images (data URIs are fine to keep for icons)
+
+      // Convert relative URLs to absolute in remaining HTML (href, action etc.)
       const baseUrl = new URL(url)
       const origin = baseUrl.origin
-      let fixedHtml = section.outerHTML
-        .replace(/(src|href|action|poster)=["'](?!https?:\/\/|data:|#|mailto:|tel:|javascript:)(\/?)([^"']*?)["']/gi,
+      let fixedHtml = cleanHtml
+        .replace(/(href|action)=["'](?!https?:\/\/|data:|#|mailto:|tel:|javascript:)(\/?)([^"']*?)["']/gi,
           (match, attr, slash, path) => {
             const absUrl = slash ? `${origin}/${path}` : `${origin}${baseUrl.pathname.replace(/[^/]*$/, '')}${path}`
             return `${attr}="${absUrl}"`
-          })
-        .replace(/url\(["']?(?!https?:\/\/|data:)(\/?)([^"')]+?)["']?\)/gi,
-          (match, slash, path) => {
-            const absUrl = slash ? `${origin}/${path}` : `${origin}${baseUrl.pathname.replace(/[^/]*$/, '')}${path}`
-            return `url("${absUrl}")`
           })
 
       parts.push({
@@ -337,6 +343,8 @@ export async function extractParts(url: string) {
         tagName: section.tagName,
         position: section.boundingBox,
         thumbnail,
+        genre: '',
+        tags: [] as string[],
         meta: {
           hasImages: section.hasImages,
           hasCTA: section.hasCTA,
