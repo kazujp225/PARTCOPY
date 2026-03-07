@@ -7,7 +7,7 @@ export interface RawSection {
   tagName: string
   outerHTML: string
   textContent: string
-  boundingBox: { top: number; left: number; width: number; height: number }
+  boundingBox: { x: number; y: number; width: number; height: number }
   computedStyles: Record<string, string>
   hasImages: boolean
   hasCTA: boolean

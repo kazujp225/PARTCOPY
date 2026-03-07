@@ -8,7 +8,6 @@
 -- ============================================================
 
 -- Enable extensions
-create extension if not exists "uuid-ossp";
 create extension if not exists "vector";
 
 -- ============================================================
@@ -16,14 +15,14 @@ create extension if not exists "vector";
 -- ============================================================
 
 create table organizations (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   name text not null,
   slug text unique not null,
   created_at timestamptz not null default now()
 );
 
 create table organization_members (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
   role text not null default 'member' check (role in ('owner', 'admin', 'member')),
@@ -32,7 +31,7 @@ create table organization_members (
 );
 
 create table workspaces (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete cascade,
   name text not null,
   slug text not null,
@@ -41,7 +40,7 @@ create table workspaces (
 );
 
 create table projects (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces(id) on delete cascade,
   name text not null,
   industry text,
@@ -55,7 +54,7 @@ create table projects (
 -- ============================================================
 
 create table source_sites (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   normalized_domain text unique not null,
   homepage_url text not null,
   industry text,
@@ -73,7 +72,7 @@ create index idx_source_sites_genre on source_sites(genre);
 create index idx_source_sites_status on source_sites(status);
 
 create table crawl_runs (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   site_id uuid not null references source_sites(id) on delete cascade,
   project_id uuid references projects(id) on delete set null,
   trigger_type text not null default 'manual' check (trigger_type in ('manual', 'scheduled', 'benchmark')),
@@ -93,7 +92,7 @@ create index idx_crawl_runs_status on crawl_runs(status);
 create index idx_crawl_runs_site_id on crawl_runs(site_id);
 
 create table source_pages (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   crawl_run_id uuid not null references crawl_runs(id) on delete cascade,
   site_id uuid not null references source_sites(id) on delete cascade,
   url text not null,
@@ -112,7 +111,7 @@ create index idx_source_pages_crawl_run on source_pages(crawl_run_id);
 create index idx_source_pages_page_type on source_pages(page_type);
 
 create table source_sections (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   page_id uuid not null references source_pages(id) on delete cascade,
   site_id uuid not null references source_sites(id) on delete cascade,
   order_index int not null default 0,
@@ -147,7 +146,7 @@ create index idx_source_sections_family on source_sections(block_family);
 create index idx_source_sections_site on source_sections(site_id);
 
 create table section_labels (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   section_id uuid not null references source_sections(id) on delete cascade,
   label_source text not null check (label_source in ('heuristic', 'human', 'model')),
   block_family text not null,
@@ -165,7 +164,7 @@ create index idx_section_labels_section on section_labels(section_id);
 -- ============================================================
 
 create table block_families (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   key text unique not null,
   label text not null,
   label_ja text not null,
@@ -194,7 +193,7 @@ insert into block_families (key, label, label_ja, sort_order) values
   ('logo_cloud',      'Logo Cloud',      'ロゴ一覧',          17);
 
 create table block_variants (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   family_key text not null references block_families(key),
   variant_key text unique not null,
   label text not null,
@@ -233,7 +232,7 @@ insert into block_variants (family_key, variant_key, label, slot_schema_json) va
   ('stats', 'stats_with_text',     'Stats + Description',  '{"headline":{"type":"text"},"description":{"type":"text"},"stats":{"type":"stat_list"}}');
 
 create table block_instances (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   source_section_id uuid references source_sections(id) on delete set null,
   block_variant_id uuid not null references block_variants(id),
   slot_values_jsonb jsonb not null default '{}',
@@ -247,7 +246,7 @@ create table block_instances (
 create index idx_block_instances_variant on block_instances(block_variant_id);
 
 create table style_token_sets (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   name text not null,
   tokens_jsonb jsonb not null default '{}',
   source_url text,
@@ -260,7 +259,7 @@ create table style_token_sets (
 -- ============================================================
 
 create table project_pages (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   project_id uuid not null references projects(id) on delete cascade,
   slug text not null,
   title text,
@@ -274,7 +273,7 @@ create table project_pages (
 );
 
 create table project_page_blocks (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   project_page_id uuid not null references project_pages(id) on delete cascade,
   position int not null default 0,
   block_variant_id uuid not null references block_variants(id),
@@ -289,7 +288,7 @@ create table project_page_blocks (
 create index idx_ppb_page on project_page_blocks(project_page_id);
 
 create table project_assets (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   project_id uuid not null references projects(id) on delete cascade,
   storage_path text not null,
   file_name text not null,
@@ -301,7 +300,7 @@ create table project_assets (
 );
 
 create table exports (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   project_id uuid not null references projects(id) on delete cascade,
   format text not null check (format in ('static_html', 'nextjs_tailwind', 'wordpress', 'json_schema')),
   storage_path text,

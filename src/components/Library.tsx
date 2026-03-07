@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { SourceSection, GenreInfo, BlockFamilyInfo } from '../types'
+import { SourcePreviewFrame } from './SourcePreviewFrame'
 
 const FAMILY_COLORS: Record<string, string> = {
   navigation: '#6366f1', hero: '#3b82f6', feature: '#10b981', social_proof: '#ec4899',
@@ -102,11 +103,7 @@ export function Library({ onAddToCanvas }: Props) {
             onMouseLeave={() => setHoveredId(null)}
           >
             <div className="library-card-thumb">
-              {sec.thumbnailUrl ? (
-                <img src={sec.thumbnailUrl} alt={sec.block_family} loading="lazy" />
-              ) : (
-                <div className="library-card-no-thumb">No Preview</div>
-              )}
+              <SourcePreviewFrame htmlUrl={sec.htmlUrl} maxHeight={260} scale={0.5} />
               <div className="part-overlay-top">
                 <span className="part-type-badge" style={{ background: FAMILY_COLORS[sec.block_family] || '#94a3b8' }}>
                   {sec.block_family}

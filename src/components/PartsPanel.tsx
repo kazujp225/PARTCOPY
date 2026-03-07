@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { SourceSection, BlockFamily } from '../types'
+import { SourcePreviewFrame } from './SourcePreviewFrame'
 
 const FAMILY_LABELS: Record<string, string> = {
   navigation: 'Nav', hero: 'Hero', feature: 'Feature', social_proof: 'Social Proof',
@@ -64,16 +65,12 @@ export function PartsPanel({ sections, onAdd, onRemove }: Props) {
         {filtered.map(sec => (
           <div
             key={sec.id}
-            className={`part-card ${hoveredId === sec.id ? 'hovered' : ''}`}
+            className="part-card"
             onMouseEnter={() => setHoveredId(sec.id)}
             onMouseLeave={() => setHoveredId(null)}
           >
             <div className="part-thumbnail-wrap">
-              {sec.thumbnailUrl ? (
-                <img src={sec.thumbnailUrl} alt={sec.block_family} className="part-thumbnail" loading="lazy" />
-              ) : (
-                <div className="part-thumbnail-placeholder">No Preview</div>
-              )}
+              <SourcePreviewFrame htmlUrl={sec.htmlUrl} maxHeight={300} scale={0.45} />
               <div className="part-overlay-top">
                 <span className="part-type-badge" style={{ background: FAMILY_COLORS[sec.block_family] || '#94a3b8' }}>
                   {FAMILY_LABELS[sec.block_family] || sec.block_family}

@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import { createClient } from '@supabase/supabase-js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'http://127.0.0.1:54321'

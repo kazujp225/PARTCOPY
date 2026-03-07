@@ -60,6 +60,7 @@ export interface SourceSection {
   text_summary: string
   thumbnail_storage_path?: string
   thumbnailUrl?: string
+  htmlUrl?: string
   raw_html_storage_path?: string
   sanitized_html_storage_path?: string
   source_pages?: { url: string; title: string }

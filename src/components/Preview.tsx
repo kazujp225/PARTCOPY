@@ -1,5 +1,6 @@
 import React from 'react'
 import { SourceSection, CanvasBlock } from '../types'
+import { SourcePreviewFrame } from './SourcePreviewFrame'
 
 interface CanvasItem {
   canvas: CanvasBlock
@@ -22,16 +23,12 @@ export function Preview({ items }: Props) {
   return (
     <div className="preview-container">
       <div className="preview-mode-bar">
-        <span className="preview-label">Screenshot Preview</span>
+        <span className="preview-label">Live Preview</span>
       </div>
       <div className="preview-screenshots">
         {items.map(item => (
           <div key={item.canvas.id} className="preview-section">
-            {item.section.thumbnailUrl ? (
-              <img src={item.section.thumbnailUrl} alt={item.section.block_family} className="preview-section-img" />
-            ) : (
-              <div className="preview-section-placeholder">{item.section.block_family} - No preview</div>
-            )}
+            <SourcePreviewFrame htmlUrl={item.section.htmlUrl} maxHeight={2000} />
           </div>
         ))}
       </div>
