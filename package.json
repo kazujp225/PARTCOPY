@@ -5,11 +5,18 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:all": "concurrently \"npm run dev:server\" \"npm run dev:worker\" \"npm run dev:client\"",
     "dev:client": "vite",
     "dev:server": "tsx watch server/index.ts",
+    "dev:worker": "tsx watch server/worker.ts",
+    "db:start": "supabase start",
+    "db:stop": "supabase stop",
+    "db:reset": "supabase db reset",
+    "db:migrate": "supabase migration up",
     "build": "tsc -b && vite build"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.98.0",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",

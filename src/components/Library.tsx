@@ -1,72 +1,64 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { SavedPart, GenreInfo } from '../types'
+import { SourceSection, GenreInfo, BlockFamilyInfo } from '../types'
 
-const BLOCK_COLORS: Record<string, string> = {
-  hero: '#3b82f6', navigation: '#6366f1', feature: '#10b981', cta: '#f59e0b',
-  pricing: '#8b5cf6', testimonial: '#ec4899', faq: '#14b8a6',
-  footer: '#6b7280', contact: '#f97316', gallery: '#06b6d4',
-  stats: '#84cc16', 'logo-cloud': '#a855f7', content: '#64748b', unknown: '#94a3b8'
+const FAMILY_COLORS: Record<string, string> = {
+  navigation: '#6366f1', hero: '#3b82f6', feature: '#10b981', social_proof: '#ec4899',
+  stats: '#84cc16', pricing: '#8b5cf6', faq: '#14b8a6', content: '#64748b',
+  cta: '#f59e0b', contact: '#f97316', recruit: '#06b6d4', footer: '#6b7280',
+  news_list: '#a855f7', timeline: '#0ea5e9', company_profile: '#059669',
+  gallery: '#06b6d4', logo_cloud: '#a855f7'
 }
 
 interface Props {
-  onAddToCanvas: (part: SavedPart) => void
+  onAddToCanvas: (section: SourceSection) => void
 }
 
 export function Library({ onAddToCanvas }: Props) {
   const [genres, setGenres] = useState<GenreInfo[]>([])
+  const [families, setFamilies] = useState<BlockFamilyInfo[]>([])
   const [selectedGenre, setSelectedGenre] = useState<string | null>(null)
-  const [selectedType, setSelectedType] = useState<string | null>(null)
-  const [parts, setParts] = useState<SavedPart[]>([])
+  const [selectedFamily, setSelectedFamily] = useState<string | null>(null)
+  const [sections, setSections] = useState<SourceSection[]>([])
   const [loading, setLoading] = useState(false)
   const [hoveredId, setHoveredId] = useState<string | null>(null)
 
-  const fetchGenres = useCallback(async () => {
-    const res = await fetch('/api/library/genres')
-    const data = await res.json()
-    setGenres(data.genres)
+  const fetchMeta = useCallback(async () => {
+    const [gRes, fRes] = await Promise.all([
+      fetch('/api/library/genres'),
+      fetch('/api/library/families')
+    ])
+    const gData = await gRes.json()
+    const fData = await fRes.json()
+    setGenres(gData.genres || [])
+    setFamilies(fData.families || [])
   }, [])
 
-  const fetchParts = useCallback(async () => {
+  const fetchSections = useCallback(async () => {
     setLoading(true)
-    let url = '/api/library'
     const params = new URLSearchParams()
     if (selectedGenre) params.set('genre', selectedGenre)
-    if (selectedType) params.set('type', selectedType)
-    if (params.toString()) url += '?' + params.toString()
-    const res = await fetch(url)
+    if (selectedFamily) params.set('family', selectedFamily)
+    const res = await fetch(`/api/library?${params}`)
     const data = await res.json()
-    setParts(data.parts)
+    setSections(data.sections || [])
     setLoading(false)
-  }, [selectedGenre, selectedType])
+  }, [selectedGenre, selectedFamily])
 
-  useEffect(() => { fetchGenres() }, [fetchGenres])
-  useEffect(() => { fetchParts() }, [fetchParts])
+  useEffect(() => { fetchMeta() }, [fetchMeta])
+  useEffect(() => { fetchSections() }, [fetchSections])
 
   const handleDelete = async (id: string) => {
     await fetch(`/api/library/${id}`, { method: 'DELETE' })
-    setParts(prev => prev.filter(p => p.id !== id))
-    fetchGenres()
+    setSections(prev => prev.filter(s => s.id !== id))
+    fetchMeta()
   }
-
-  // Get type counts from current parts list
-  const typeCounts = parts.reduce<Record<string, number>>((acc, p) => {
-    acc[p.type] = (acc[p.type] || 0) + 1
-    return acc
-  }, {})
-
-  const displayed = selectedType
-    ? parts.filter(p => p.type === selectedType)
-    : parts
 
   return (
     <div className="library">
       <div className="library-sidebar">
         <h3 className="library-sidebar-title">Genres</h3>
-        <button
-          className={`library-genre-btn ${!selectedGenre ? 'active' : ''}`}
-          onClick={() => setSelectedGenre(null)}
-        >
-          All ({genres.reduce((s, g) => s + g.count, 0)})
+        <button className={`library-genre-btn ${!selectedGenre ? 'active' : ''}`} onClick={() => setSelectedGenre(null)}>
+          All
         </button>
         {genres.map(g => (
           <button
@@ -78,68 +70,61 @@ export function Library({ onAddToCanvas }: Props) {
           </button>
         ))}
 
-        <h3 className="library-sidebar-title" style={{ marginTop: 20 }}>Block Types</h3>
-        <button
-          className={`library-genre-btn ${!selectedType ? 'active' : ''}`}
-          onClick={() => setSelectedType(null)}
-        >
-          All types
+        <h3 className="library-sidebar-title" style={{ marginTop: 20 }}>Block Families</h3>
+        <button className={`library-genre-btn ${!selectedFamily ? 'active' : ''}`} onClick={() => setSelectedFamily(null)}>
+          All families
         </button>
-        {Object.entries(typeCounts).sort((a, b) => b[1] - a[1]).map(([type, count]) => (
+        {families.map(f => (
           <button
-            key={type}
-            className={`library-genre-btn ${selectedType === type ? 'active' : ''}`}
-            onClick={() => setSelectedType(type)}
+            key={f.key}
+            className={`library-genre-btn ${selectedFamily === f.key ? 'active' : ''}`}
+            onClick={() => setSelectedFamily(f.key)}
           >
-            <span className="filter-dot" style={{ background: BLOCK_COLORS[type] || '#94a3b8' }} />
-            {type} ({count})
+            <span className="filter-dot" style={{ background: FAMILY_COLORS[f.key] || '#94a3b8' }} />
+            {f.label_ja}
           </button>
         ))}
       </div>
 
       <div className="library-grid">
         {loading && <div className="library-loading">Loading...</div>}
-        {!loading && displayed.length === 0 && (
+        {!loading && sections.length === 0 && (
           <div className="library-empty">
             <p>保存されたパーツがありません</p>
-            <p className="library-empty-hint">Extractしたパーツを「Save to Library」で保存してください</p>
+            <p className="library-empty-hint">URLを抽出するとライブラリに自動保存されます</p>
           </div>
         )}
-        {displayed.map(part => (
+        {sections.map(sec => (
           <div
-            key={part.id}
+            key={sec.id}
             className="library-card"
-            onMouseEnter={() => setHoveredId(part.id)}
+            onMouseEnter={() => setHoveredId(sec.id)}
             onMouseLeave={() => setHoveredId(null)}
           >
             <div className="library-card-thumb">
-              {part.thumbnail ? (
-                <img src={part.thumbnail} alt={part.type} loading="lazy" />
+              {sec.thumbnailUrl ? (
+                <img src={sec.thumbnailUrl} alt={sec.block_family} loading="lazy" />
               ) : (
                 <div className="library-card-no-thumb">No Preview</div>
               )}
               <div className="part-overlay-top">
-                <span className="part-type-badge" style={{ background: BLOCK_COLORS[part.type] || '#94a3b8' }}>
-                  {part.type}
+                <span className="part-type-badge" style={{ background: FAMILY_COLORS[sec.block_family] || '#94a3b8' }}>
+                  {sec.block_family}
                 </span>
               </div>
-              {hoveredId === part.id && (
+              {hoveredId === sec.id && (
                 <div className="part-overlay-actions">
-                  <button className="add-btn-large" onClick={() => onAddToCanvas(part)}>
-                    + Canvas に追加
-                  </button>
-                  <button className="remove-btn-small" onClick={() => handleDelete(part.id)}>
-                    削除
-                  </button>
+                  <button className="add-btn-large" onClick={() => onAddToCanvas(sec)}>+ Canvas</button>
+                  <button className="remove-btn-small" onClick={() => handleDelete(sec.id)}>削除</button>
                 </div>
               )}
             </div>
             <div className="library-card-info">
               <div className="library-card-genre">
-                {part.genre && <span className="genre-badge">{part.genre}</span>}
-                {part.tags.map(t => <span key={t} className="tag-badge">{t}</span>)}
+                {sec.source_sites?.genre && <span className="genre-badge">{sec.source_sites.genre}</span>}
+                {sec.source_sites?.tags?.map(t => <span key={t} className="tag-badge">{t}</span>)}
               </div>
-              <div className="part-source">{new URL(part.sourceUrl).hostname}</div>
+              <div className="part-source">{sec.source_sites?.normalized_domain || ''}</div>
             </div>
           </div>
         ))}

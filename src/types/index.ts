@@ -1,64 +1,94 @@
-export type BlockType =
-  | 'hero'
+// ============================================================
+// Block taxonomy
+// ============================================================
+export type BlockFamily =
   | 'navigation'
+  | 'hero'
   | 'feature'
-  | 'cta'
-  | 'pricing'
-  | 'testimonial'
-  | 'faq'
-  | 'footer'
-  | 'contact'
-  | 'gallery'
+  | 'social_proof'
   | 'stats'
-  | 'logo-cloud'
+  | 'pricing'
+  | 'faq'
   | 'content'
-  | 'unknown'
+  | 'cta'
+  | 'contact'
+  | 'recruit'
+  | 'footer'
+  | 'news_list'
+  | 'timeline'
+  | 'company_profile'
+  | 'gallery'
+  | 'logo_cloud'
 
-export interface ExtractedBlock {
+// ============================================================
+// Crawl job
+// ============================================================
+export type JobStatus = 'queued' | 'claimed' | 'rendering' | 'parsed' | 'normalizing' | 'done' | 'failed'
+
+export interface CrawlJob {
   id: string
-  type: BlockType
-  confidence: number
-  html: string
-  css: string
-  stylesheetUrls: string[]
-  textContent: string
-  tagName: string
-  position: { top: number; left: number; width: number; height: number }
-  meta: {
-    hasImages: boolean
-    hasCTA: boolean
-    hasForm: boolean
-    headingCount: number
-    linkCount: number
-    cardCount: number
+  site_id: string
+  status: JobStatus
+  page_count: number
+  section_count: number
+  error_message?: string
+  queued_at: string
+  started_at?: string
+  finished_at?: string
+  source_sites?: {
+    normalized_domain: string
+    genre: string
+    tags: string[]
   }
-  sourceUrl: string
-  thumbnail?: string
-  genre: string
-  tags: string[]
 }
 
-export interface SavedPart {
+// ============================================================
+// Source section (from Supabase)
+// ============================================================
+export interface SourceSection {
   id: string
-  type: string
-  confidence: number
-  html: string
-  textContent: string
-  tagName: string
-  thumbnail?: string
-  genre: string
-  tags: string[]
-  meta: Record<string, any>
-  sourceUrl: string
-  savedAt: string
+  page_id: string
+  site_id: string
+  order_index: number
+  tag_name: string
+  bbox_json: { top: number; left: number; width: number; height: number }
+  block_family: BlockFamily | string
+  block_variant?: string
+  classifier_type: string
+  classifier_confidence: number
+  features_jsonb: Record<string, any>
+  text_summary: string
+  thumbnail_storage_path?: string
+  thumbnailUrl?: string
+  raw_html_storage_path?: string
+  sanitized_html_storage_path?: string
+  source_pages?: { url: string; title: string }
+  source_sites?: { normalized_domain: string; genre: string; tags: string[] }
+  created_at: string
 }
 
+// ============================================================
+// Canvas
+// ============================================================
 export interface CanvasBlock {
   id: string
-  blockId: string
-  order: number
+  sectionId: string
+  position: number
 }
 
+// ============================================================
+// Block family metadata
+// ============================================================
+export interface BlockFamilyInfo {
+  key: string
+  label: string
+  label_ja: string
+  sort_order: number
+}
+
+// ============================================================
+// Genre info
+// ============================================================
 export interface GenreInfo {
   genre: string
   count: number

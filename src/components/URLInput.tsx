@@ -9,9 +9,10 @@ interface Props {
   onSubmit: (url: string, genre: string, tags: string[]) => void
   loading: boolean
   error: string | null
+  jobStatus: string | null
 }
 
-export function URLInput({ onSubmit, loading, error }: Props) {
+export function URLInput({ onSubmit, loading, error, jobStatus }: Props) {
   const [url, setUrl] = useState('')
   const [genre, setGenre] = useState('')
   const [tagInput, setTagInput] = useState('')
@@ -20,9 +21,7 @@ export function URLInput({ onSubmit, loading, error }: Props) {
     e.preventDefault()
     if (!url.trim() || loading) return
     let finalUrl = url.trim()
-    if (!/^https?:\/\//.test(finalUrl)) {
-      finalUrl = 'https://' + finalUrl
-    }
+    if (!/^https?:\/\//.test(finalUrl)) finalUrl = 'https://' + finalUrl
     const tags = tagInput.split(',').map(t => t.trim()).filter(Boolean)
     onSubmit(finalUrl, genre, tags)
   }
@@ -44,34 +43,27 @@ export function URLInput({ onSubmit, loading, error }: Props) {
           </button>
         </div>
         <div className="url-form-tags">
-          <div className="genre-select-wrap">
-            <select
-              value={genre}
-              onChange={e => setGenre(e.target.value)}
-              className="genre-select"
-            >
-              <option value="">-- Genre --</option>
-              {GENRE_PRESETS.map(g => (
-                <option key={g} value={g}>{g}</option>
-              ))}
-            </select>
-            <input
-              type="text"
-              value={genre}
-              onChange={e => setGenre(e.target.value)}
-              placeholder="or type genre"
-              className="genre-custom"
-            />
-          </div>
+          <select value={genre} onChange={e => setGenre(e.target.value)} className="genre-select">
+            <option value="">-- Genre --</option>
+            {GENRE_PRESETS.map(g => <option key={g} value={g}>{g}</option>)}
+          </select>
+          <input
+            type="text"
+            value={genre}
+            onChange={e => setGenre(e.target.value)}
+            placeholder="or type genre"
+            className="genre-custom"
+          />
           <input
             type="text"
             value={tagInput}
             onChange={e => setTagInput(e.target.value)}
-            placeholder="Tags (comma separated: LP, corporate, ...)"
+            placeholder="Tags (comma separated)"
             className="tag-input"
           />
         </div>
       </form>
+      {jobStatus && <div className="job-status">{jobStatus}</div>}
       {error && <div className="error-msg">{error}</div>}
     </div>
   )

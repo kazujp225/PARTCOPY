@@ -227,6 +227,22 @@ body {
   text-align: center;
 }
 
+.job-status {
+  color: var(--primary);
+  font-size: 12px;
+  margin-top: 6px;
+  text-align: center;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.preview-label {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
 /* Editor Layout */
 .editor-layout {
   display: flex;

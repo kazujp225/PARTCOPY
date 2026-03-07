@@ -1,60 +1,41 @@
 import React, { useState } from 'react'
-import { ExtractedBlock, BlockType } from '../types'
+import { SourceSection, BlockFamily } from '../types'
 
-const BLOCK_LABELS: Record<BlockType, string> = {
-  hero: 'Hero',
-  navigation: 'Navigation',
-  feature: 'Feature',
-  cta: 'CTA',
-  pricing: 'Pricing',
-  testimonial: 'Testimonial',
-  faq: 'FAQ',
-  footer: 'Footer',
-  contact: 'Contact',
-  gallery: 'Gallery',
-  stats: 'Stats',
-  'logo-cloud': 'Logo Cloud',
-  content: 'Content',
-  unknown: 'Unknown'
+const FAMILY_LABELS: Record<string, string> = {
+  navigation: 'Nav', hero: 'Hero', feature: 'Feature', social_proof: 'Social Proof',
+  stats: 'Stats', pricing: 'Pricing', faq: 'FAQ', content: 'Content',
+  cta: 'CTA', contact: 'Contact', recruit: 'Recruit', footer: 'Footer',
+  news_list: 'News', timeline: 'Timeline', company_profile: 'Company',
+  gallery: 'Gallery', logo_cloud: 'Logo Cloud'
 }
 
-const BLOCK_COLORS: Record<BlockType, string> = {
-  hero: '#3b82f6',
-  navigation: '#6366f1',
-  feature: '#10b981',
-  cta: '#f59e0b',
-  pricing: '#8b5cf6',
-  testimonial: '#ec4899',
-  faq: '#14b8a6',
-  footer: '#6b7280',
-  contact: '#f97316',
-  gallery: '#06b6d4',
-  stats: '#84cc16',
-  'logo-cloud': '#a855f7',
-  content: '#64748b',
-  unknown: '#94a3b8'
+const FAMILY_COLORS: Record<string, string> = {
+  navigation: '#6366f1', hero: '#3b82f6', feature: '#10b981', social_proof: '#ec4899',
+  stats: '#84cc16', pricing: '#8b5cf6', faq: '#14b8a6', content: '#64748b',
+  cta: '#f59e0b', contact: '#f97316', recruit: '#06b6d4', footer: '#6b7280',
+  news_list: '#a855f7', timeline: '#0ea5e9', company_profile: '#059669',
+  gallery: '#06b6d4', logo_cloud: '#a855f7'
 }
 
 interface Props {
-  parts: ExtractedBlock[]
-  onAdd: (id: string) => void
-  onRemove: (id: string) => void
+  sections: SourceSection[]
+  onAdd: (sectionId: string) => void
+  onRemove: (sectionId: string) => void
 }
 
-export function PartsPanel({ parts, onAdd, onRemove }: Props) {
-  const [filter, setFilter] = useState<BlockType | 'all'>('all')
+export function PartsPanel({ sections, onAdd, onRemove }: Props) {
+  const [filter, setFilter] = useState<string | 'all'>('all')
   const [hoveredId, setHoveredId] = useState<string | null>(null)
 
-  const filtered = filter === 'all'
-    ? parts
-    : parts.filter(p => p.type === filter)
+  const filtered = filter === 'all' ? sections : sections.filter(s => s.block_family === filter)
 
-  const typeCounts = parts.reduce<Record<string, number>>((acc, p) => {
-    acc[p.type] = (acc[p.type] || 0) + 1
+  const familyCounts = sections.reduce<Record<string, number>>((acc, s) => {
+    const f = s.block_family || 'content'
+    acc[f] = (acc[f] || 0) + 1
     return acc
   }, {})
 
-  if (parts.length === 0) {
+  if (sections.length === 0) {
     return (
       <aside className="parts-panel">
         <div className="parts-empty">
@@ -67,92 +48,53 @@ export function PartsPanel({ parts, onAdd, onRemove }: Props) {
 
   return (
     <aside className="parts-panel">
-      <div className="parts-header">
-        <h2>Parts ({parts.length})</h2>
-      </div>
-
+      <div className="parts-header"><h2>Parts ({sections.length})</h2></div>
       <div className="parts-filters">
-        <button
-          className={`filter-btn ${filter === 'all' ? 'active' : ''}`}
-          onClick={() => setFilter('all')}
-        >
-          All ({parts.length})
+        <button className={`filter-btn ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
+          All ({sections.length})
         </button>
-        {Object.entries(typeCounts).sort((a, b) => b[1] - a[1]).map(([type, count]) => (
-          <button
-            key={type}
-            className={`filter-btn ${filter === type ? 'active' : ''}`}
-            onClick={() => setFilter(type as BlockType)}
-          >
-            <span
-              className="filter-dot"
-              style={{ background: BLOCK_COLORS[type as BlockType] }}
-            />
-            {BLOCK_LABELS[type as BlockType]} ({count})
+        {Object.entries(familyCounts).sort((a, b) => b[1] - a[1]).map(([fam, count]) => (
+          <button key={fam} className={`filter-btn ${filter === fam ? 'active' : ''}`} onClick={() => setFilter(fam)}>
+            <span className="filter-dot" style={{ background: FAMILY_COLORS[fam] || '#94a3b8' }} />
+            {FAMILY_LABELS[fam] || fam} ({count})
           </button>
         ))}
       </div>
-
       <div className="parts-list">
-        {filtered.map(part => (
+        {filtered.map(sec => (
           <div
-            key={part.id}
-            className={`part-card ${hoveredId === part.id ? 'hovered' : ''}`}
-            onMouseEnter={() => setHoveredId(part.id)}
+            key={sec.id}
+            className={`part-card ${hoveredId === sec.id ? 'hovered' : ''}`}
+            onMouseEnter={() => setHoveredId(sec.id)}
             onMouseLeave={() => setHoveredId(null)}
           >
-            {/* Thumbnail - the main visual */}
             <div className="part-thumbnail-wrap">
-              {part.thumbnail ? (
-                <img
-                  src={part.thumbnail}
-                  alt={`${BLOCK_LABELS[part.type]} section`}
-                  className="part-thumbnail"
-                  loading="lazy"
-                />
+              {sec.thumbnailUrl ? (
+                <img src={sec.thumbnailUrl} alt={sec.block_family} className="part-thumbnail" loading="lazy" />
               ) : (
-                <div className="part-thumbnail-placeholder">
-                  No Preview
-                </div>
+                <div className="part-thumbnail-placeholder">No Preview</div>
               )}
-
-              {/* Overlay badge */}
               <div className="part-overlay-top">
-                <span
-                  className="part-type-badge"
-                  style={{ background: BLOCK_COLORS[part.type] }}
-                >
-                  {BLOCK_LABELS[part.type]}
+                <span className="part-type-badge" style={{ background: FAMILY_COLORS[sec.block_family] || '#94a3b8' }}>
+                  {FAMILY_LABELS[sec.block_family] || sec.block_family}
                 </span>
-                <span className="part-confidence">
-                  {Math.round(part.confidence * 100)}%
-                </span>
+                <span className="part-confidence">{Math.round(sec.classifier_confidence * 100)}%</span>
               </div>
-
-              {/* Hover overlay with actions */}
-              {hoveredId === part.id && (
+              {hoveredId === sec.id && (
                 <div className="part-overlay-actions">
-                  <button className="add-btn-large" onClick={() => onAdd(part.id)}>
-                    + Canvas に追加
-                  </button>
-                  <button className="remove-btn-small" onClick={() => onRemove(part.id)}>
-                    削除
-                  </button>
+                  <button className="add-btn-large" onClick={() => onAdd(sec.id)}>+ Canvas</button>
+                  <button className="remove-btn-small" onClick={() => onRemove(sec.id)}>削除</button>
                 </div>
               )}
             </div>
-
-            {/* Meta info below thumbnail */}
             <div className="part-info-bar">
               <div className="part-meta-tags">
-                {part.meta.hasImages && <span className="meta-tag">IMG</span>}
-                {part.meta.hasCTA && <span className="meta-tag cta">CTA</span>}
-                {part.meta.hasForm && <span className="meta-tag form">FORM</span>}
-                {part.meta.headingCount > 0 && <span className="meta-tag">H{part.meta.headingCount}</span>}
-                {part.meta.linkCount > 0 && <span className="meta-tag">Links:{part.meta.linkCount}</span>}
+                {sec.features_jsonb?.hasImages && <span className="meta-tag">IMG</span>}
+                {sec.features_jsonb?.hasCTA && <span className="meta-tag cta">CTA</span>}
+                {sec.features_jsonb?.hasForm && <span className="meta-tag form">FORM</span>}
               </div>
               <div className="part-source">
-                {new URL(part.sourceUrl).hostname}
+                {sec.source_sites?.normalized_domain || sec.source_pages?.url?.replace(/https?:\/\//, '').split('/')[0] || ''}
               </div>
             </div>
           </div>

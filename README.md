@@ -1,199 +1,157 @@
-# PARTCOPY
+# PARTCOPY — Site Genome OS
 
-**URLを入れるだけで、サイトを再利用可能なUIパーツに分解するノーコードWeb構築ツール。**
+**既存サイトのURLから構造を抽出・正規化し、再構成・比較・提案まで行う制作OS。**
 
-日本企業サイト（.co.jp）のUIコンポーネントを構造レベルで抽出・分類・蓄積し、ドラッグ&ドロップで新しいサイトを組み立てる。画像は除去し、レイアウトパターン（構造）だけを資産化する。
+raw HTMLを編集対象にしない。canonical block（正規化された再利用ブロック）を中心に据え、抽出→分類→正規化→比較→再構成→出力の全工程をカバーする。
 
 ---
 
 ## Architecture
 
 ```
-Browser (React + Vite)
-  │
-  │  POST /api/extract { url, genre, tags }
-  ▼
-Express Server (port 3001)
-  │
-  ├── Puppeteer ──► Target Site
-  │     │
-  │     ├── Full-page render (1440x900)
-  │     ├── Lazy-load trigger (scroll bottom → top)
-  │     ├── DOM section detection
-  │     ├── Per-section screenshot (element.screenshot)
-  │     └── CSS / stylesheet URL collection
-  │
-  ├── Section Classifier (heuristic)
-  │     └── DOM tag + class/id + text + position → BlockType
-  │
-  ├── HTML Sanitizer
-  │     ├── <img> / <picture> / <video> → placeholder
-  │     ├── background-image → strip
-  │     └── relative URL → absolute URL (href, action)
-  │
-  └── Storage (JSON file)
-        └── data/parts.json
+React + Vite (Client)
+  ├─ Supabase Auth (future)
+  ├─ Job polling / Realtime
+  └─ Canvas Editor
+
+Express API Server (port 3001)  ← Puppeteer を持たない軽量API
+  ├─ POST /api/extract          → crawl_runs に job 投入
+  ├─ GET  /api/jobs/:id         → job 状態取得
+  ├─ GET  /api/jobs/:id/sections → 結果取得 (signed URL付き)
+  ├─ GET  /api/library          → セクション検索
+  ├─ GET  /api/library/genres   → ジャンル集計
+  ├─ GET  /api/library/families → ブロックファミリー一覧
+  └─ GET  /api/block-variants   → バリアント一覧
+
+Crawl Worker (別プロセス)  ← 重い処理はここ
+  ├─ crawl_runs を polling → claim → process
+  ├─ Puppeteer でページ取得
+  ├─ DOM解析 → セクション分割
+  ├─ Heuristic分類 (classifier.ts)
+  ├─ セクションごと screenshot → Supabase Storage
+  ├─ HTML sanitize (画像除去)
+  ├─ raw/sanitized HTML → Supabase Storage
+  └─ source_sections に結果書き込み
+
+Supabase
+  ├─ Postgres (4層スキーマ)
+  ├─ Storage (screenshots, HTML, exports)
+  ├─ pgvector (将来: 類似ブロック検索)
+  └─ RLS (org/workspace境界)
 ```
+
+### API / Worker 分離の理由
+
+Puppeteerは重い。タイムアウト、メモリ圧迫、クラッシュ時の巻き添えを避けるため、APIサーバーとブラウザワーカーを完全分離。APIはジョブ投入と結果取得のみ。
 
 ---
 
-## Tech Stack
+## Database Schema (4 Layers)
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 18 + TypeScript + Vite 6 |
-| Backend | Express + Puppeteer (headless Chrome) |
-| Storage | JSON file (`data/parts.json`) |
-| Build | tsx (dev), tsc + vite build (prod) |
+### Layer 1: Tenant
+```
+organizations → organization_members → workspaces → projects
+```
+顧客境界。RLSの中心。
 
-依存パッケージは最小限。DB不要、Docker不要、`npm install && npm run dev` で即起動。
+### Layer 2: Corpus
+```
+source_sites → crawl_runs → source_pages → source_sections → section_labels
+```
+.co.jp コーパス。研究資産。
+
+| Table | Purpose |
+|-------|---------|
+| `source_sites` | ドメイン単位。genre/tags/industry付き |
+| `crawl_runs` | ジョブ管理。status state machine: queued→claimed→rendering→parsed→normalizing→done/failed |
+| `source_pages` | ページ単位。URL/title/screenshot_path/content_hash |
+| `source_sections` | セクション単位。分類結果/特徴量/サムネ/embedding(vector) |
+| `section_labels` | 分類ラベル。heuristic/human/model別。学習ループの基盤 |
+
+### Layer 3: Canonical Block
+```
+block_families → block_variants → block_instances → style_token_sets
+```
+**ここがmoat。** raw HTMLではなく、正規化ブロックが編集対象。
+
+| Table | Purpose |
+|-------|---------|
+| `block_families` | 17種: navigation, hero, feature, social_proof, stats, pricing, faq, content, cta, contact, recruit, footer, news_list, timeline, company_profile, gallery, logo_cloud |
+| `block_variants` | Family内のバリエーション。例: hero_centered, hero_split_left, feature_grid_3, faq_accordion |
+| `block_instances` | 実際の抽出結果をvariantにマッピング。slot_values + token_values |
+| `style_token_sets` | computed styleから抽出したデザイントークン |
+
+### Layer 4: Editor / Output
+```
+project_pages → project_page_blocks → project_assets → exports
+```
+ユーザーが編集するのはここ。
 
 ---
 
-## Features (Current v0.1)
+## Block Taxonomy (2階層)
 
-### 1. URL → パーツ抽出
+Family = 意味、Variant = 編集可能単位。
 
-URLを入力すると、Puppeteerでページをフルレンダリングし、DOMを解析してセマンティックセクションに分割する。
+| Family | Variants (初期) |
+|--------|----------------|
+| hero | hero_centered, hero_split_left, hero_split_right, hero_with_trust |
+| feature | feature_grid_3, feature_grid_4, feature_grid_6, feature_alternating |
+| pricing | pricing_3col, pricing_toggle |
+| faq | faq_accordion, faq_2col |
+| cta | cta_banner_single, cta_banner_dual |
+| contact | contact_form_full, contact_split |
+| footer | footer_sitemap, footer_minimal |
+| navigation | nav_simple, nav_mega |
+| social_proof | testimonial_cards, logo_strip |
+| stats | stats_row, stats_with_text |
 
-**抽出フロー:**
-
-1. Headless Chromeでページ取得（networkidle2待機）
-2. Scroll to bottom → top でlazy-load発火
-3. セマンティック要素（`<header>`, `<nav>`, `<section>`, `<footer>` 等）＋ body直下の大きなブロック要素を候補として収集
-4. 入れ子の親子関係を解決（大きすぎる親を除外、子を優先）
-5. 各セクションを分類（後述）
-6. 各セクションの **スクリーンショット** を `element.screenshot()` で個別取得
-7. HTMLから画像を除去、相対URLを絶対URLに変換
-
-**出力（1セクション = 1パーツ）:**
-
-```typescript
-{
-  id: string           // UUID
-  type: BlockType      // 分類結果
-  confidence: number   // 0.0 - 1.0
-  html: string         // 画像除去済みHTML
-  thumbnail: string    // base64 PNG screenshot
-  genre: string        // ユーザー指定ジャンル
-  tags: string[]       // ユーザー指定タグ
-  meta: {
-    hasImages: boolean
-    hasCTA: boolean
-    hasForm: boolean
-    headingCount: number
-    linkCount: number
-    cardCount: number
-  }
-  sourceUrl: string
-  stylesheetUrls: string[]
-}
-```
-
-### 2. セクション分類（ヒューリスティクス）
-
-13種のBlockTypeに分類する。AI/MLは未使用。現在は以下のルールベース:
-
-| BlockType | 判定ロジック |
-|-----------|------------|
-| `navigation` | `<nav>`タグ、class/idに`nav`、`<header>`でリンク3つ以上 |
-| `hero` | ページ上部25%以内、class/idに`hero`/`banner`/`mv`/`kv`/`fv`、高さ300px超+CTA有り |
-| `feature` | class/idに`feature`/`service`/`merit`、テキストに「特徴」「サービス」、カード3枚以上 |
-| `pricing` | class/idに`pricing`/`plan`、テキストに「料金」「プラン」 |
-| `cta` | class/idに`cta`、CTA有り+見出し2以下+子要素10未満 |
-| `faq` | class/idに`faq`、テキストに「よくある質問」 |
-| `testimonial` | class/idに`testimonial`/`voice`/`review`、テキストに「お客様の声」「導入事例」 |
-| `contact` | `<form>`有り、class/idに`contact`、テキストに「お問い合わせ」 |
-| `footer` | `<footer>`タグ、class/idに`footer`、ページ下部85%以下+リンク5つ以上 |
-| `stats` | class/idに`number`/`stat`/`counter`、テキストに「実績」 |
-| `logo-cloud` | class/idに`logo`/`client`/`partner`、テキストに「導入企業」+画像有り |
-| `gallery` | class/idに`gallery`/`portfolio`/`works` |
-| `content` | 見出し1つ以上+テキスト100文字以上（汎用） |
-
-**日本語サイト特化のキーワードを含む**（`mainvisual`, `fv`, `kv`, `mv`, 「お客様の声」,「よくある質問」等）。
-
-### 3. 画像除去（構造のみ保持）
-
-他人の著作物（画像）を除去し、レイアウト構造だけを資産化する:
-
-- `<img>` → グレーの「IMAGE」プレースホルダーdivに置換
-- `<picture>`, `<video>` → 同様にプレースホルダー化
-- `background-image: url(...)` → CSSプロパティ自体を除去
-- スクリーンショット（thumbnail）は参照用として保持（元サイトの見た目確認用）
-
-### 4. ジャンルタグ付け
-
-抽出時にジャンルとタグを指定:
-
-- **ジャンルプリセット（16種）:** SaaS, EC, BtoB, BtoC, 士業, 医療, 美容, 飲食, 不動産, 教育, 採用, 金融, IT, 製造, コンサル, その他
-- **カスタム入力:** プリセット以外も自由入力可
-- **タグ:** カンマ区切りで複数付与（例: `LP, corporate, tax`）
-
-### 5. パーツライブラリ（永続保存）
-
-抽出したパーツを `data/parts.json` に保存。ジャンル別・ブロック種別でフィルタ。
-
-**Library画面:**
-- サイドバー: ジャンル一覧（件数付き）+ ブロック種別一覧
-- グリッド表示: サムネイル付きカード
-- ホバー → 「Canvasに追加」or「削除」
-- 複数サイトのパーツを横断的に閲覧
-
-### 6. Canvas（ページ構築）
-
-パーツをCanvasに追加し、ドラッグ&ドロップで並び替えてページを構成する:
-
-- パーツパネルからホバー → 「Canvas に追加」
-- Library画面から直接追加も可能
-- ドラッグ&ドロップ or 上下ボタンで順序変更
-- 各ブロックのスクリーンショットで配置を確認
-- ブロック単位で削除
-
-### 7. Preview
-
-2つのモード:
-
-- **Screenshot モード（デフォルト）:** スクリーンショットを縦に結合。実際のサイトの見た目と完全一致。
-- **Live HTML モード:** 元サイトのスタイルシートを`<link>`で注入し、画像除去済みHTMLをレンダリング。構造の確認用。
-
-### 8. Export
-
-Canvasの構成をHTMLファイルとして出力:
-
-- 元サイトのスタイルシートURL込み
-- コピー or ファイルダウンロード
+各variantは `slot_schema_json` を持ち、どんなスロット（headline, subheadline, primary_cta, cards, etc.）を受け入れるか定義。
 
 ---
 
-## API
+## Classifier
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/extract` | URLからパーツ抽出。Body: `{ url: string }` |
-| `POST` | `/api/library/save` | パーツをライブラリに保存。Body: `{ parts: [], genre: string, tags: string[] }` |
-| `GET` | `/api/library` | 保存済みパーツ一覧。Query: `?genre=SaaS` or `?type=hero` |
-| `GET` | `/api/library/genres` | ジャンル一覧+件数 |
-| `PATCH` | `/api/library/:id` | パーツのジャンル/タグ更新。Body: `{ genre, tags }` |
-| `DELETE` | `/api/library/:id` | パーツ削除 |
+`server/classifier.ts` — ヒューリスティクスベース。将来ML置き換え前提。
+
+**判定に使う特徴量:**
+- HTMLタグ (`<nav>`, `<header>`, `<footer>`, `<section>`)
+- class/id名のキーワード
+- テキスト内容（日本語: 「よくある質問」「お客様の声」「料金」等）
+- ページ内位置 (position ratio)
+- BBox (height, width)
+- CTA/Form/Image/Card/Link/Headingの有無と数
+- computed style (fontSize, display等)
+
+**全特徴量が `features_jsonb` に保存され、将来のML学習データになる。**
 
 ---
 
-## Data Model
+## Storage Design (Supabase Storage)
+
+| Bucket | Content |
+|--------|---------|
+| `corpus-raw-html` | 元HTML (provenance用) |
+| `corpus-sanitized-html` | 画像除去済みHTML |
+| `corpus-page-screenshots` | ページ全体スクリーンショット |
+| `corpus-section-thumbnails` | セクション単位スクリーンショット |
+| `project-assets` | ユーザーアップロード画像等 |
+| `export-artifacts` | 出力ファイル |
+
+すべてprivate。UIにはsigned URLで配信。base64はDBに持たない。
+
+---
+
+## Job State Machine
 
 ```
-data/parts.json
-└── StoredPart[]
-      ├── id: string
-      ├── type: BlockType (hero | navigation | feature | ...)
-      ├── confidence: number
-      ├── html: string (images stripped)
-      ├── thumbnail: string (base64 PNG)
-      ├── genre: string
-      ├── tags: string[]
-      ├── meta: { hasImages, hasCTA, hasForm, headingCount, linkCount, cardCount }
-      ├── sourceUrl: string
-      └── savedAt: string (ISO 8601)
+queued → claimed → rendering → parsed → normalizing → done
+                                                    ↘ failed
 ```
+
+- Worker が `queued` を atomic に `claimed` に更新して排他制御
+- 各ステージでエラー → `failed` + error_code/message
+- Client は polling (将来 Realtime Broadcast) でステータス監視
 
 ---
 
@@ -202,27 +160,31 @@ data/parts.json
 ```
 PARTCOPY/
 ├── server/
-│   ├── index.ts          # Express API routes
-│   ├── extractor.ts      # Puppeteer + DOM解析 + 分類 + screenshot
-│   └── storage.ts        # JSON file CRUD
+│   ├── index.ts          # Express API (軽量、Puppeteerなし)
+│   ├── worker.ts         # Crawl Worker (Puppeteer、別プロセス)
+│   ├── classifier.ts     # セクション分類 (独立モジュール)
+│   └── supabase.ts       # Supabase client + bucket定義
+├── supabase/
+│   ├── config.toml
+│   └── migrations/
+│       └── 00001_initial_schema.sql  # 4層スキーマ + seed
 ├── src/
-│   ├── App.tsx           # Main app state + routing
-│   ├── main.tsx          # React entry
-│   ├── styles.css        # All styles (dark theme)
-│   ├── types/index.ts    # TypeScript types
+│   ├── App.tsx           # Job-based state + routing
+│   ├── main.tsx
+│   ├── styles.css
+│   ├── types/index.ts    # SourceSection, CrawlJob, BlockFamily等
 │   └── components/
-│       ├── URLInput.tsx   # URL + genre + tags input
-│       ├── PartsPanel.tsx # Extracted parts sidebar (thumbnail cards)
-│       ├── Canvas.tsx     # Page builder (drag & drop)
-│       ├── Preview.tsx    # Screenshot / Live HTML preview
-│       ├── Library.tsx    # Saved parts browser (genre filter)
-│       └── ExportModal.tsx # HTML export
-├── data/                  # Runtime storage (gitignored)
-│   └── parts.json
+│       ├── URLInput.tsx   # URL + genre + tags + job status
+│       ├── PartsPanel.tsx # 抽出セクション (thumbnail cards)
+│       ├── Canvas.tsx     # ページ構築 (drag & drop)
+│       ├── Preview.tsx    # Screenshot preview
+│       └── Library.tsx    # 保存済みパーツ (genre/family filter)
+├── .env.example
+├── .gitignore
 ├── package.json
 ├── tsconfig.json
 ├── vite.config.ts
-└── plan.md               # Original business plan
+└── plan.md
 ```
 
 ---
@@ -230,36 +192,93 @@ PARTCOPY/
 ## Setup
 
 ```bash
+# 1. Install
 npm install
-npm run dev
+
+# 2. Supabase local (Docker必須)
+supabase start
+# → 出力されるURL, anon key, service_role keyを.envに設定
+
+# 3. 環境変数
+cp .env.example .env
+# → .envにSupabase credentialsを記入
+
+# 4. 起動 (API + Worker + Client)
+npm run dev:all
 # → Client: http://localhost:5173
-# → Server: http://localhost:3001
+# → API:    http://localhost:3001
+# → Worker: 別プロセスでcrawl_runsをpolling
 ```
 
 ---
 
-## Known Limitations / Next Steps
+## What Was Removed (and Why)
 
-### Current Limitations
-
-- **分類精度:** ヒューリスティクスのみ。class名やテキストに手がかりがないセクションは `content` or `unknown` に落ちる
-- **ストレージ:** JSONファイル。パーツ数が万単位になるとパフォーマンスが劣化する
-- **CSS:** 元サイトのスタイルシートURLをそのまま参照。オフラインでは崩れる
-- **SPA対応:** `networkidle2` 待ちだが、クライアントサイドルーティングのSPAは初期表示のみ取得
-- **Export:** 元サイトCSS依存。自立したHTMLにはならない
-
-### Roadmap（plan.md準拠）
-
-1. **分類精度向上:** DOM + テキスト embedding + 視覚レイアウト（bbox, font-size）の組み合わせでML分類器を構築。目標: 上位10ブロック Precision 90%+
-2. **Semantic Block正規化:** raw HTMLではなく、canonical block schema（`hero_split_left`, `feature_grid_3` 等）への変換。内容/レイアウト/スタイルの分離
-3. **ストレージ移行:** JSON → SQLite or PostgreSQL。全文検索、類似構造検索
-4. **ベンチマーク/提案モジュール:** 同業他社との構造比較、欠落ブロック指摘、CTAの改善提案
-5. **AI生成:** ジャンル+目的を選ぶと、蓄積パターンに基づいて新サイト初稿を自動生成
-6. **大規模クロール:** .co.jp 10,000サイト → セクション分類 → UIパターンコーパス構築
-7. **出力強化:** Static HTML/CSS、Next.js + Tailwind、JSON schema 出力
+| Removed | Reason |
+|---------|--------|
+| `data/parts.json` | 単一ファイル保存。同時書き込み/検索/履歴/権限すべてに弱い → Supabase Postgres |
+| `base64 thumbnail` | DBもAPIもUIも太る → Supabase Storage + signed URL |
+| `元サイトCSS <link>注入` | CORS/変更/ブロック/依存JSで壊れる → source previewとeditor previewを分離 |
+| `元CSS依存export` | 外部依存の寄せ集め → 将来自前renderer (Static/Next.js/WordPress) |
+| `ExportModal` | 上記理由で廃止。P4で自前renderer実装時に再構築 |
+| `server/extractor.ts` | APIとPuppeteerの同居 → API/Worker分離 |
+| `server/storage.ts` | JSON CRUD → Supabase |
 
 ---
 
-## License
+## Roadmap
 
-Private / Internal use.
+### P0: Infrastructure (Current)
+- [x] Supabase schema (4層, 17ファミリー, 24バリアント seed)
+- [x] API/Worker分離
+- [x] Job state machine
+- [x] Classifier独立モジュール
+- [x] Storage bucket設計
+- [ ] Supabase接続 (Docker起動後)
+- [ ] Realtime Broadcast (job進捗)
+
+### P1: Classification Quality
+- [ ] features_jsonbを教師データの起点に
+- [ ] Internal labeling UI
+- [ ] Eval run + precision tracking
+- [ ] Model version管理
+
+### P2: Canonical Block Normalization
+- [ ] source_section → block_instance 変換
+- [ ] Style token extractor (computed style → tokens)
+- [ ] pgvector で類似ブロック検索
+- [ ] Quality score
+
+### P3: Editor
+- [ ] Block recipe ベースcanvas
+- [ ] Slot editing (headline, CTA text等)
+- [ ] Token editing (色、余白、フォント)
+- [ ] Source preview / Editor previewの二面化
+- [ ] Autosave + 履歴
+
+### P4: Export / Publish
+- [ ] Static HTML/CSS renderer
+- [ ] Next.js + Tailwind renderer
+- [ ] WordPress export
+- [ ] SEO / OGP / sitemap
+- [ ] フォーム連携
+
+### P5: Benchmark / Proposal
+- [ ] 業種別cohort構造比較
+- [ ] 競合比較 (欠落ブロック、CTA配置)
+- [ ] 提案書PDF出力
+- [ ] "URL→初稿" を5分以内に
+
+### P6: AI Layer
+- [ ] Copy rewrite (slot単位)
+- [ ] Block recommendation (業種×目的)
+- [ ] Site map draft generation
+- [ ] Similar site recommendation (pgvector)
+
+---
+
+## North Star Metric
+
+> **既存企業サイトの再構築にかかる構造設計時間を、何分の1にできたか**
+
+KPI: URL→初稿時間 / 人手修正時間 / 提案採択率 / 1社あたり月間処理案件数
