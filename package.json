@@ -4,8 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:all": "concurrently \"npm run dev:server\" \"npm run dev:worker\" \"npm run dev:client\"",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:worker\" \"npm run dev:client\"",
     "dev:client": "PARTCOPY_API_PORT=${PARTCOPY_API_PORT:-3002} vite --host 127.0.0.1 --port ${PARTCOPY_CLIENT_PORT:-5180}",
     "dev:server": "PARTCOPY_API_PORT=${PARTCOPY_API_PORT:-3002} tsx watch server/index.ts",
     "dev:worker": "tsx watch server/worker.ts",

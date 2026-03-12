@@ -36,7 +36,7 @@ import { logger } from './logger.js'
 const app = express()
 app.use(cors({
   origin: (origin, callback) => {
-    const allowed = (process.env.CORS_ORIGIN || 'http://localhost:5180').split(',')
+    const allowed = (process.env.CORS_ORIGIN || 'http://localhost:5180,http://127.0.0.1:5180').split(',')
     // Allow requests with no origin (curl, server-to-server)
     if (!origin || allowed.includes(origin)) {
       callback(null, true)
@@ -754,7 +754,11 @@ app.get('/api/sections/:sectionId/render', async (req, res) => {
     const cssBundlePath = record.page.css_bundle_path
     const cssLink = cssBundlePath ? `<link rel="stylesheet" href="/assets/${cssBundlePath}">` : ''
 
-    const html = buildRenderDocument(storedHtml, pageOrigin, { extraHead: cssLink, skipBase: true })
+    // If HTML still has relative URLs (not rewritten to /assets/), inject <base> so they resolve to origin
+    const hasUnresolvedRelativeUrls = /(?:src|href)=["'](?!https?:\/\/|\/\/|data:|#|mailto:|tel:|javascript:|\/?assets\/)/.test(storedHtml)
+    const useBase = hasUnresolvedRelativeUrls && pageOrigin
+
+    const html = buildRenderDocument(storedHtml, pageOrigin, { extraHead: cssLink, skipBase: !useBase })
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache')
@@ -1057,8 +1061,11 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
   });
 </script>`
 
+    const hasUnresolvedRelativeUrls = /(?:src|href)=["'](?!https?:\/\/|\/\/|data:|#|mailto:|tel:|javascript:|\/?assets\/)/.test(sectionHtml)
+    const useBase = hasUnresolvedRelativeUrls && pageOrigin
+
     const html = buildRenderDocument(sectionHtml, pageOrigin, {
-      skipBase: true,
+      skipBase: !useBase,
       extraHead: `${cssLink}<style>
   [data-pc-key] { cursor: pointer; transition: outline 0.15s; }
   [data-pc-key]:hover { outline: 2px solid rgba(59,130,246,0.4); }

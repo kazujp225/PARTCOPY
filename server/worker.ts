@@ -66,20 +66,66 @@ async function uploadBuffer(bucket: string, path: string, data: Buffer | string,
 }
 
 /**
- * sed -i 's|originalUrl|localPath|g' 相当のシンプルな一括置換。
- * URLは長い順にソート済みなので部分一致を回避できる。
+ * セクションHTML内のURLをローカルアセットパスに書き換える。
+ *
+ * 1. 絶対URL（urlMap のキー）を直接置換
+ * 2. 相対URL / ルート相対URLをページURLで解決し、urlMap にあれば置換
  */
 function rewriteStoredHtml(
   html: string,
-  _finalPageUrl: string,
+  finalPageUrl: string,
   _pageOrigin: string,
   sortedEntries: Array<[string, string]>,
-  _urlMap: Map<string, string>
+  urlMap: Map<string, string>
 ) {
   let result = html
+
+  // Step 1: 絶対URL の直接置換（長い順）
   for (const [originalUrl, localPath] of sortedEntries) {
     result = result.split(originalUrl).join(localPath)
   }
+
+  // Step 2: 相対URL → 絶対URL → urlMap で置換
+  result = result.replace(
+    /(src|href|srcset|poster|action)=(["'])(?!data:|https?:\/\/|\/\/|#|mailto:|tel:|javascript:|\/?assets\/)((?:(?!\2).)*)\2/gi,
+    (match, attr, q, rawPath) => {
+      // srcset は複数URL がカンマ区切りのため個別に解決
+      if (attr.toLowerCase() === 'srcset') {
+        const rewritten = rawPath.split(',').map((segment: string) => {
+          const parts = segment.trim().split(/\s+/)
+          const url = parts[0]
+          try {
+            const resolved = new URL(url, finalPageUrl).href
+            const local = urlMap.get(resolved)
+            if (local) { parts[0] = local }
+          } catch {}
+          return parts.join(' ')
+        }).join(', ')
+        return `${attr}=${q}${rewritten}${q}`
+      }
+
+      try {
+        const resolved = new URL(rawPath, finalPageUrl).href
+        const local = urlMap.get(resolved)
+        if (local) return `${attr}=${q}${local}${q}`
+      } catch {}
+      return match
+    }
+  )
+
+  // Step 3: inline style の background-image url() も解決
+  result = result.replace(
+    /url\(\s*(['"]?)(?!data:|https?:\/\/|\/\/|\/?assets\/)((?:(?!\1\)).)*)\1\s*\)/gi,
+    (match, q, rawPath) => {
+      try {
+        const resolved = new URL(rawPath, finalPageUrl).href
+        const local = urlMap.get(resolved)
+        if (local) return `url(${q}${local}${q})`
+      } catch {}
+      return match
+    }
+  )
+
   return result
 }
 
