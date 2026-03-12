@@ -123,6 +123,50 @@ const buildRenderDocument = (
 </html>`
 }
 
+/**
+ * HTML内の相対URLをpageOriginで絶対URLに書き換える。
+ * <base>を使うとCSS linkの/assets/パスも壊れるため、直接書き換えで対処。
+ */
+function resolveRelativeUrls(html: string, pageOrigin: string): string {
+  if (!pageOrigin) return html
+
+  // src, href, srcset, poster, action 属性の相対URLを書き換え
+  let result = html.replace(
+    /(src|href|srcset|poster|action)=(["'])(?!data:|https?:\/\/|\/\/|#|mailto:|tel:|javascript:|\/?assets\/)((?:(?!\2).)*)\2/gi,
+    (match, attr, q, rawPath) => {
+      if (attr.toLowerCase() === 'srcset') {
+        const rewritten = rawPath.split(',').map((segment: string) => {
+          const parts = segment.trim().split(/\s+/)
+          try {
+            parts[0] = new URL(parts[0], pageOrigin + '/').href
+          } catch {}
+          return parts.join(' ')
+        }).join(', ')
+        return `${attr}=${q}${rewritten}${q}`
+      }
+      try {
+        const resolved = new URL(rawPath, pageOrigin + '/').href
+        return `${attr}=${q}${resolved}${q}`
+      } catch {}
+      return match
+    }
+  )
+
+  // inline style の background-image url() も解決
+  result = result.replace(
+    /url\(\s*(['"]?)(?!data:|https?:\/\/|\/\/|\/?assets\/)((?:(?!\1\)).)*)\1\s*\)/gi,
+    (match, q, rawPath) => {
+      try {
+        const resolved = new URL(rawPath, pageOrigin + '/').href
+        return `url(${q}${resolved}${q})`
+      } catch {}
+      return match
+    }
+  )
+
+  return result
+}
+
 async function readBucketText(bucket: string, storagePath?: string | null) {
   if (!storagePath) return ''
 
@@ -750,15 +794,14 @@ app.get('/api/sections/:sectionId/render', async (req, res) => {
       return
     }
 
+    // Resolve any remaining relative URLs to absolute (instead of <base> which breaks /assets/ paths)
+    storedHtml = resolveRelativeUrls(storedHtml, pageOrigin)
+
     // Link to CSS bundle file instead of inlining (much smaller response)
     const cssBundlePath = record.page.css_bundle_path
     const cssLink = cssBundlePath ? `<link rel="stylesheet" href="/assets/${cssBundlePath}">` : ''
 
-    // If HTML still has relative URLs (not rewritten to /assets/), inject <base> so they resolve to origin
-    const hasUnresolvedRelativeUrls = /(?:src|href)=["'](?!https?:\/\/|\/\/|data:|#|mailto:|tel:|javascript:|\/?assets\/)/.test(storedHtml)
-    const useBase = hasUnresolvedRelativeUrls && pageOrigin
-
-    const html = buildRenderDocument(storedHtml, pageOrigin, { extraHead: cssLink, skipBase: !useBase })
+    const html = buildRenderDocument(storedHtml, pageOrigin, { extraHead: cssLink, skipBase: true })
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache')
@@ -1061,11 +1104,10 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
   });
 </script>`
 
-    const hasUnresolvedRelativeUrls = /(?:src|href)=["'](?!https?:\/\/|\/\/|data:|#|mailto:|tel:|javascript:|\/?assets\/)/.test(sectionHtml)
-    const useBase = hasUnresolvedRelativeUrls && pageOrigin
+    sectionHtml = resolveRelativeUrls(sectionHtml, pageOrigin)
 
     const html = buildRenderDocument(sectionHtml, pageOrigin, {
-      skipBase: !useBase,
+      skipBase: true,
       extraHead: `${cssLink}<style>
   [data-pc-key] { cursor: pointer; transition: outline 0.15s; }
   [data-pc-key]:hover { outline: 2px solid rgba(59,130,246,0.4); }
