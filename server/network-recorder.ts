@@ -104,6 +104,10 @@ export async function collectCSSChunks(page: Page): Promise<CSSChunk[]> {
 
     await collectRootSheets(document, 'document')
 
+    // Traverse open shadow roots for CSS.
+    // NOTE: This only finds top-level shadow roots. Deeply nested shadow DOM
+    // (shadow root inside shadow root) is not traversed. Recursive traversal
+    // could be added here if needed, but nested shadow DOM is rare in practice.
     const shadowHosts = Array.from(document.querySelectorAll('*')).filter(el => Boolean((el as HTMLElement).shadowRoot))
     for (const host of shadowHosts) {
       const shadowRoot = (host as HTMLElement).shadowRoot

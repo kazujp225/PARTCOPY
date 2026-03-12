@@ -1,13 +1,15 @@
 /**
  * EditableSourceFrame — Source Edit Mode 用。
+ * iframe 内部は常に1440px幅でレンダリングし、コンテナに合わせて縮小表示。
  * iframe 内のノードをクリック可能にし、選択ノードを親に通知する。
- * 親からのパッチメッセージを iframe に中継する。
  *
  * 通信は postMessage 経由:
  *   iframe → parent: { type: 'pc:node-click', stableKey, tagName, textContent, rect }
  *   parent → iframe: { type: 'pc:apply-patch', patch: { nodeStableKey, op, payload } }
  */
 import React, { useRef, useEffect, useState, useCallback } from 'react'
+
+const DESKTOP_WIDTH = 1440
 
 export interface SelectedNode {
   stableKey: string
@@ -24,46 +26,52 @@ interface Props {
 
 export function EditableSourceFrame({ sectionId, maxHeight, onNodeSelect }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
   const [height, setHeight] = useState(400)
+  const [containerWidth, setContainerWidth] = useState(0)
   const [loading, setLoading] = useState(true)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
-  const [srcdoc, setSrcdoc] = useState<string | null>(null)
+  const [iframeSrc, setIframeSrc] = useState<string | null>(null)
   const [error, setError] = useState(false)
 
-  // Fetch editable-render HTML, fallback to normal render
+  // コンテナ幅を監視
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width)
+      }
+    })
+    ro.observe(el)
+    setContainerWidth(el.clientWidth)
+    return () => ro.disconnect()
+  }, [])
+
+  // Determine which URL to use
   useEffect(() => {
     if (!sectionId) return
     setLoading(true)
     setError(false)
-    setSrcdoc(null)
+    setIframeSrc(null)
 
-    fetch(`/api/sections/${sectionId}/editable-render`)
+    fetch(`/api/sections/${sectionId}/editable-render`, { method: 'HEAD' })
       .then(r => {
-        if (!r.ok) throw new Error('No editable snapshot')
-        return r.text()
-      })
-      .then(html => {
-        setSrcdoc(html)
-        setLoading(false)
+        if (r.ok) {
+          setIframeSrc(`/api/sections/${sectionId}/editable-render`)
+        } else {
+          setIframeSrc(`/api/sections/${sectionId}/render`)
+        }
       })
       .catch(() => {
-        // Fallback: normal render endpoint
-        fetch(`/api/sections/${sectionId}/render`)
-          .then(r => r.ok ? r.text() : Promise.reject())
-          .then(html => {
-            setSrcdoc(html)
-            setLoading(false)
-          })
-          .catch(() => {
-            setError(true)
-            setLoading(false)
-          })
+        setIframeSrc(`/api/sections/${sectionId}/render`)
       })
   }, [sectionId])
 
   // iframe からのメッセージ受信
   useEffect(() => {
     const handler = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return
       if (!e.data || typeof e.data !== 'object') return
 
       if (e.data.type === 'pc:node-click') {
@@ -75,18 +83,16 @@ export function EditableSourceFrame({ sectionId, maxHeight, onNodeSelect }: Prop
           rect: e.data.rect
         })
 
-        // 選択状態をiframe内に反映
         const iframe = iframeRef.current
         if (iframe?.contentWindow) {
           iframe.contentWindow.postMessage({
             type: 'pc:select-node',
             stableKey: e.data.stableKey
-          }, '*')
+          }, window.location.origin)
         }
       }
 
       if (e.data.type === 'pc:patch-applied') {
-        // パッチ適用完了 → 高さ再計測
         setTimeout(recalcHeight, 100)
       }
     }
@@ -101,12 +107,11 @@ export function EditableSourceFrame({ sectionId, maxHeight, onNodeSelect }: Prop
     try {
       const doc = iframe.contentDocument || iframe.contentWindow?.document
       if (doc?.body) {
-        setHeight(Math.min(doc.body.scrollHeight, maxHeight || 3000))
+        setHeight(Math.min(doc.body.scrollHeight, maxHeight || 10000))
       }
     } catch {}
   }, [maxHeight])
 
-  // iframe ロード完了
   const handleLoad = useCallback(() => {
     setLoading(false)
     recalcHeight()
@@ -130,23 +135,28 @@ export function EditableSourceFrame({ sectionId, maxHeight, onNodeSelect }: Prop
     )
   }
 
+  const computedScale = containerWidth > 0 ? containerWidth / DESKTOP_WIDTH : 0.5
+  const displayHeight = height * computedScale
+
   return (
-    <div style={{ position: 'relative' }}>
+    <div ref={containerRef} style={{ position: 'relative', overflow: 'hidden', height: loading ? 200 : displayHeight }}>
       {loading && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center',
           height: 200, color: '#8b90a0', fontSize: 14, background: '#f8f9fb' }}>
           Loading editor...
         </div>
       )}
-      {srcdoc && (
+      {iframeSrc && (
         <iframe
           ref={iframeRef}
-          srcDoc={srcdoc}
+          src={iframeSrc}
           onLoad={handleLoad}
           style={{
             border: 'none',
-            width: '100%',
+            width: DESKTOP_WIDTH,
             height,
+            transform: `scale(${computedScale})`,
+            transformOrigin: 'top left',
             display: loading ? 'none' : 'block'
           }}
           sandbox="allow-same-origin allow-scripts"
@@ -158,7 +168,6 @@ export function EditableSourceFrame({ sectionId, maxHeight, onNodeSelect }: Prop
 
 /**
  * iframe にパッチを送信するヘルパー。
- * コンポーネント外から呼べるように export する。
  */
 export function sendPatchToFrame(
   iframeRef: React.RefObject<HTMLIFrameElement | null>,
@@ -166,6 +175,6 @@ export function sendPatchToFrame(
 ) {
   const iframe = iframeRef.current
   if (iframe?.contentWindow) {
-    iframe.contentWindow.postMessage({ type: 'pc:apply-patch', patch }, '*')
+    iframe.contentWindow.postMessage({ type: 'pc:apply-patch', patch }, window.location.origin)
   }
 }

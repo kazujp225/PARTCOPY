@@ -31,20 +31,49 @@ import {
 } from './local-store.js'
 import { HAS_SUPABASE, supabaseAdmin } from './supabase.js'
 import { STORAGE_BUCKETS } from './storage-config.js'
+import { logger } from './logger.js'
 
 const app = express()
-app.use(cors())
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || 'http://localhost:5180',
+  credentials: true
+}))
 app.use(express.json({ limit: '1mb' }))
+
+// ============================================================
+// Health check
+// ============================================================
+app.get('/api/health', async (_req, res) => {
+  const checks: Record<string, string> = { server: 'ok' }
+
+  // Check DB
+  try {
+    if (HAS_SUPABASE) {
+      const { error } = await supabaseAdmin.from('crawl_runs').select('id').limit(1)
+      checks.db = error ? 'fail' : 'ok'
+    } else {
+      // Local mode - check if db file is readable
+      const fs = await import('fs/promises')
+      await fs.access('.partcopy/db.json')
+      checks.db = 'ok'
+    }
+  } catch {
+    checks.db = 'fail'
+  }
+
+  const allOk = Object.values(checks).every(v => v === 'ok')
+  res.status(allOk ? 200 : 503).json({ status: allOk ? 'healthy' : 'degraded', checks })
+})
 
 const buildRenderDocument = (
   storedHtml: string,
   pageOrigin: string,
-  options?: { cssBundle?: string; extraHead?: string; extraBodyEnd?: string }
+  options?: { cssBundle?: string; extraHead?: string; extraBodyEnd?: string; skipBase?: boolean }
 ) => {
   const headParts = [
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width,initial-scale=1">',
-    `<base href="${pageOrigin}/">`,
+    options?.skipBase ? '' : `<base href="${pageOrigin}/">`,
     options?.cssBundle ? `<style>${options.cssBundle}</style>` : '',
     options?.extraHead || ''
   ].filter(Boolean)
@@ -234,17 +263,6 @@ async function getRenderContext(sectionId: string) {
   return { resolvedSnapshot, section, page }
 }
 
-async function getCssBundle(pageId: string, cssBundlePath?: string | null, cacheKeyPrefix = '') {
-  const cacheKey = `${cacheKeyPrefix}${pageId}`
-  const cached = cssBundleCache.get(cacheKey)
-  if (cached && cached.expiry > Date.now()) {
-    return cached.css
-  }
-
-  const cssBundle = await readBucketText(STORAGE_BUCKETS.RAW_HTML, cssBundlePath)
-  cssBundleCache.set(cacheKey, { css: cssBundle, origin: '', expiry: Date.now() + 600000 })
-  return cssBundle
-}
 
 async function getLibraryResults(filters: {
   genre?: string
@@ -566,6 +584,38 @@ async function getDefaultVariantRecord() {
   return data || null
 }
 
+// ============================================================
+// Clean asset serving: /assets/{siteId}/{jobId}/...
+// ============================================================
+app.get('/assets/:siteId/:jobId/*', async (req, res) => {
+  if (HAS_SUPABASE) {
+    res.status(404).send('Not found in local mode')
+    return
+  }
+
+  const { siteId, jobId } = req.params
+  const rest = (req.params as any)[0] as string // e.g. "img/5-1-1.png" or "bundle.css"
+  const storagePath = `${siteId}/${jobId}/${rest}`
+
+  try {
+    const { buffer, contentType } = await getStoredFileResponse(STORAGE_BUCKETS.RAW_HTML, storagePath)
+    res.setHeader('Content-Type', contentType)
+    res.setHeader('Cache-Control', 'public, max-age=86400')
+    res.send(buffer)
+  } catch {
+    // Fallback: try sanitized-html bucket
+    try {
+      const { buffer, contentType } = await getStoredFileResponse(STORAGE_BUCKETS.SANITIZED_HTML, storagePath)
+      res.setHeader('Content-Type', contentType)
+      res.setHeader('Cache-Control', 'public, max-age=86400')
+      res.send(buffer)
+    } catch {
+      res.status(404).send('File not found')
+    }
+  }
+})
+
+// Legacy: /api/storage/:bucket (backward compat for old data)
 app.get('/api/storage/:bucket', async (req, res) => {
   if (HAS_SUPABASE) {
     res.status(404).send('Not found')
@@ -593,9 +643,21 @@ app.get('/api/storage/:bucket', async (req, res) => {
 // ============================================================
 app.post('/api/extract', async (req, res) => {
   const { url, genre, tags } = req.body
-  if (!url || typeof url !== 'string') {
-    res.status(400).json({ error: 'URL is required' })
+  if (!url || typeof url !== 'string' || !/^https?:\/\/.+/.test(url)) {
+    res.status(400).json({ error: 'Valid URL (http/https) is required' })
     return
+  }
+
+  if (genre !== undefined && typeof genre !== 'string') {
+    res.status(400).json({ error: 'genre must be a string' })
+    return
+  }
+
+  if (tags !== undefined) {
+    if (!Array.isArray(tags) || !tags.every((t: unknown) => typeof t === 'string')) {
+      res.status(400).json({ error: 'tags must be an array of strings' })
+      return
+    }
   }
 
   let parsedUrl: URL
@@ -611,7 +673,7 @@ app.post('/api/extract', async (req, res) => {
 
     res.json({ jobId: job.id, siteId: site.id, status: 'queued' })
   } catch (err: any) {
-    console.error('Extract error:', err)
+    logger.error('Extract job creation failed', { url, error: err.message })
     res.status(500).json({ error: err.message })
   }
 })
@@ -639,11 +701,9 @@ app.get('/api/jobs/:id/sections', async (req, res) => {
       return
     }
 
-    const cssBundle = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.page.css_bundle_path)
     const sections = (record.sections || []).map((section: any) => ({
       ...section,
-      htmlUrl: (section.sanitized_html_storage_path || section.raw_html_storage_path) ? `/api/sections/${section.id}/render` : null,
-      cssSize: cssBundle.length
+      htmlUrl: (section.sanitized_html_storage_path || section.raw_html_storage_path) ? `/api/sections/${section.id}/render` : null
     }))
 
     res.json({ sections })
@@ -653,11 +713,8 @@ app.get('/api/jobs/:id/sections', async (req, res) => {
 })
 
 // ============================================================
-// Render: Serve self-contained HTML for a section (CSS inlined)
+// Render: Serve section HTML + CSS bundle via <link>
 // ============================================================
-// Cache CSS bundles per page to avoid re-downloading
-const cssBundleCache = new Map<string, { css: string; origin: string; expiry: number }>()
-
 app.get('/api/sections/:sectionId/render', async (req, res) => {
   const { sectionId } = req.params
   try {
@@ -673,15 +730,11 @@ app.get('/api/sections/:sectionId/render', async (req, res) => {
     }
 
     const pageOrigin = record.page.url ? new URL(record.page.url).origin : ''
-    const needsBundle = record.resolvedSnapshot?.css_strategy !== 'resolved_inline'
-    const cssBundle = needsBundle ? await getCssBundle(record.page.id, record.page.css_bundle_path) : ''
 
-    let storedHtml = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.resolvedSnapshot?.html_storage_path)
+    // Prefer raw HTML (small, with clean /assets/ URLs)
+    let storedHtml = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.section.raw_html_storage_path)
     if (!storedHtml) {
       storedHtml = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.section.sanitized_html_storage_path)
-    }
-    if (!storedHtml) {
-      storedHtml = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.section.raw_html_storage_path)
     }
 
     if (!storedHtml) {
@@ -689,10 +742,14 @@ app.get('/api/sections/:sectionId/render', async (req, res) => {
       return
     }
 
-    const html = buildRenderDocument(storedHtml, pageOrigin, { cssBundle })
+    // Link to CSS bundle file instead of inlining (much smaller response)
+    const cssBundlePath = record.page.css_bundle_path
+    const cssLink = cssBundlePath ? `<link rel="stylesheet" href="/assets/${cssBundlePath}">` : ''
+
+    const html = buildRenderDocument(storedHtml, pageOrigin, { extraHead: cssLink, skipBase: true })
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
-    res.setHeader('Cache-Control', 'public, max-age=3600')
+    res.setHeader('Cache-Control', 'no-cache')
     res.send(html)
   } catch (err: any) {
     res.status(500).send(err.message || 'Render failed')
@@ -782,8 +839,19 @@ app.get('/api/block-variants', async (req, res) => {
 // ============================================================
 app.delete('/api/library/:id', async (req, res) => {
   try {
+    const section = await getSectionRecord(req.params.id)
+    if (section && HAS_SUPABASE) {
+      const paths = [
+        section.raw_html_storage_path,
+        section.sanitized_html_storage_path,
+        section.thumbnail_storage_path
+      ].filter(Boolean)
+      for (const p of paths) {
+        await supabaseAdmin.storage.from(STORAGE_BUCKETS.RAW_HTML).remove([p]).catch(() => {})
+      }
+    }
     await deleteSectionRecord(req.params.id)
-    res.json({ deleted: true })
+    res.json({ ok: true })
   } catch (err: any) {
     res.status(500).json({ error: err.message })
   }
@@ -813,6 +881,96 @@ app.get('/api/sections/:sectionId/dom', async (req, res) => {
 })
 
 // ============================================================
+// Source Edit: Get / Update raw HTML for code editing
+// ============================================================
+async function getSectionRecord(sectionId: string) {
+  if (!HAS_SUPABASE) {
+    return getSection(sectionId)
+  }
+  const { data, error } = await supabaseAdmin
+    .from('source_sections')
+    .select('*')
+    .eq('id', sectionId)
+    .single()
+  if (error) return null
+  return data
+}
+
+app.get('/api/sections/:sectionId/html', async (req, res) => {
+  const { sectionId } = req.params
+  try {
+    const section = await getSectionRecord(sectionId)
+    if (!section?.raw_html_storage_path) {
+      res.status(404).json({ error: 'Section not found' })
+      return
+    }
+    const html = await readBucketText(STORAGE_BUCKETS.RAW_HTML, section.raw_html_storage_path)
+    res.json({ html, storagePath: section.raw_html_storage_path })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.put('/api/sections/:sectionId/html', async (req, res) => {
+  const { sectionId } = req.params
+  const { html } = req.body
+  if (typeof html !== 'string' || html.trim().length === 0) {
+    res.status(400).json({ error: 'html must be a non-empty string' })
+    return
+  }
+  try {
+    const section = await getSectionRecord(sectionId)
+    if (!section?.raw_html_storage_path) {
+      res.status(404).json({ error: 'Section not found' })
+      return
+    }
+    if (HAS_SUPABASE) {
+      const buffer = Buffer.from(html, 'utf-8')
+      const { error } = await supabaseAdmin.storage
+        .from(STORAGE_BUCKETS.RAW_HTML)
+        .upload(section.raw_html_storage_path, buffer, { contentType: 'text/html', upsert: true })
+      if (error) throw new Error(error.message)
+    } else {
+      const { writeStoredFile } = await import('./local-store.js')
+      await writeStoredFile(
+        STORAGE_BUCKETS.RAW_HTML,
+        section.raw_html_storage_path,
+        Buffer.from(html, 'utf-8'),
+        'text/html'
+      )
+    }
+    res.json({ ok: true })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ============================================================
+// Section: Delete
+// ============================================================
+app.delete('/api/sections/:sectionId', async (req, res) => {
+  const { sectionId } = req.params
+  try {
+    // Optionally clean up storage files
+    const section = await getSectionRecord(sectionId)
+    if (section && HAS_SUPABASE) {
+      const paths = [
+        section.raw_html_storage_path,
+        section.sanitized_html_storage_path,
+        section.thumbnail_storage_path
+      ].filter(Boolean)
+      for (const p of paths) {
+        await supabaseAdmin.storage.from(STORAGE_BUCKETS.RAW_HTML).remove([p]).catch(() => {})
+      }
+    }
+    await deleteSectionRecord(sectionId)
+    res.json({ ok: true })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ============================================================
 // Source Edit: Render resolved HTML (with data-pc-key attributes)
 // ============================================================
 app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
@@ -825,8 +983,6 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
     }
 
     const pageOrigin = record.page.url ? new URL(record.page.url).origin : ''
-    const needsBundle = record.resolvedSnapshot.css_strategy !== 'resolved_inline'
-    const cssBundle = needsBundle ? await getCssBundle(record.page.id, record.page.css_bundle_path, 'edit_') : ''
 
     let sectionHtml = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.resolvedSnapshot.html_storage_path)
     if (!sectionHtml) {
@@ -834,12 +990,9 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
       return
     }
 
-    // relative URL → absolute
-    sectionHtml = sectionHtml.replace(
-      /(src|href|srcset|poster|action)=(['"])(?!data:|https?:\/\/|\/\/|#|mailto:|tel:|javascript:)(\/?)((?:(?!\2).)*)\2/gi,
-      (_: any, attr: string, q: string, slash: string, path: string) =>
-        `${attr}=${q}${pageOrigin}${slash ? '/' : '/'}${path}${q}`
-    )
+    // CSS bundle via <link> (resolved inline HTMLの場合でもCSSは必要ない場合がある)
+    const cssBundlePath = record.page.css_bundle_path
+    const cssLink = cssBundlePath ? `<link rel="stylesheet" href="/assets/${cssBundlePath}">` : ''
 
   // 編集UIとの通信用スクリプト
   const editorScript = `
@@ -897,8 +1050,8 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
 </script>`
 
     const html = buildRenderDocument(sectionHtml, pageOrigin, {
-      cssBundle,
-      extraHead: `<style>
+      skipBase: true,
+      extraHead: `${cssLink}<style>
   [data-pc-key] { cursor: pointer; transition: outline 0.15s; }
   [data-pc-key]:hover { outline: 2px solid rgba(59,130,246,0.4); }
   [data-pc-selected] { outline: 2px solid #3b82f6 !important; box-shadow: 0 0 0 4px rgba(59,130,246,0.15); }
@@ -919,6 +1072,16 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
 app.post('/api/sections/:sectionId/patch-sets', async (req, res) => {
   const { sectionId } = req.params
   const { projectId, label } = req.body
+
+  if (projectId !== undefined && projectId !== null && typeof projectId !== 'string') {
+    res.status(400).json({ error: 'projectId must be a string if provided' })
+    return
+  }
+  if (label !== undefined && label !== null && typeof label !== 'string') {
+    res.status(400).json({ error: 'label must be a string if provided' })
+    return
+  }
+
   try {
     const patchSet = await createPatchSetRecord(sectionId, projectId || null, label || null)
     if (!patchSet) {
@@ -943,11 +1106,21 @@ app.post('/api/patch-sets/:patchSetId/patches', async (req, res) => {
     return
   }
 
-  // Validate
+  // Validate each patch
   const VALID_OPS = ['set_text', 'set_attr', 'replace_asset', 'remove_node', 'insert_after', 'move_node', 'set_style_token', 'set_class']
   for (const p of patches) {
-    if (!p.nodeStableKey || !VALID_OPS.includes(p.op)) {
-      res.status(400).json({ error: `Invalid patch: ${JSON.stringify(p)}` })
+    if (!p.nodeStableKey || typeof p.nodeStableKey !== 'string') {
+      res.status(400).json({ error: 'Each patch must have a nodeStableKey string' })
+      return
+    }
+    if (!p.op || typeof p.op !== 'string' || !VALID_OPS.includes(p.op)) {
+      res.status(400).json({ error: `Invalid op "${p.op}". Must be one of: ${VALID_OPS.join(', ')}` })
+      return
+    }
+    // Ops that require a payload object
+    const OPS_REQUIRING_PAYLOAD = ['set_text', 'set_attr', 'replace_asset', 'set_style_token', 'set_class', 'insert_after']
+    if (OPS_REQUIRING_PAYLOAD.includes(p.op) && (!p.payload || typeof p.payload !== 'object')) {
+      res.status(400).json({ error: `Op "${p.op}" requires a payload object` })
       return
     }
     // Block dangerous attrs
@@ -1025,6 +1198,19 @@ app.post('/api/projects/:projectId/page-blocks', async (req, res) => {
 })
 
 const PORT = Number(process.env.PARTCOPY_API_PORT || 3001)
-app.listen(PORT, () => {
-  console.log(`API server running on http://localhost:${PORT}`)
+const server = app.listen(PORT, () => {
+  logger.info('API server started', { port: PORT, supabase: HAS_SUPABASE })
 })
+
+let shuttingDown = false
+const shutdownHandler = () => {
+  if (shuttingDown) return
+  shuttingDown = true
+  logger.info('Server shutting down')
+  server.close(() => {
+    logger.info('Server closed')
+    process.exit(0)
+  })
+}
+process.on('SIGTERM', shutdownHandler)
+process.on('SIGINT', shutdownHandler)

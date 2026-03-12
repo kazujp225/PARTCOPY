@@ -3,14 +3,8 @@ import { SourceSection, CanvasBlock } from '../types'
 import { SourcePreviewFrame } from './SourcePreviewFrame'
 import { EditableSourceFrame, type SelectedNode } from './EditableSourceFrame'
 import { NodeInspector } from './NodeInspector'
-
-const FAMILY_COLORS: Record<string, string> = {
-  navigation: '#6366f1', hero: '#3b82f6', feature: '#10b981', social_proof: '#ec4899',
-  stats: '#84cc16', pricing: '#8b5cf6', faq: '#14b8a6', content: '#64748b',
-  cta: '#f59e0b', contact: '#f97316', recruit: '#06b6d4', footer: '#6b7280',
-  news_list: '#a855f7', timeline: '#0ea5e9', company_profile: '#059669',
-  gallery: '#06b6d4', logo_cloud: '#a855f7'
-}
+import { CodeEditor } from './CodeEditor'
+import { FAMILY_COLORS } from '../constants'
 
 interface CanvasItem {
   canvas: CanvasBlock
@@ -28,8 +22,11 @@ export function Canvas({ items, onRemove, onMove }: Props) {
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const dragRef = useRef<number | null>(null)
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [codeEditingIndex, setCodeEditingIndex] = useState<number | null>(null)
   const [selectedNode, setSelectedNode] = useState<SelectedNode | null>(null)
   const iframeRefs = useRef<Map<number, HTMLIFrameElement>>(new Map())
+  // プレビュー強制リロード用キー
+  const [refreshKeys, setRefreshKeys] = useState<Record<number, number>>({})
 
   const handleDragStart = (i: number) => { dragRef.current = i; setDragIndex(i) }
   const handleDragOver = (e: React.DragEvent, i: number) => { e.preventDefault(); setDragOverIndex(i) }
@@ -47,11 +44,18 @@ export function Canvas({ items, onRemove, onMove }: Props) {
     if (editingIndex === null) return
     const iframe = iframeRefs.current.get(editingIndex)
     if (iframe?.contentWindow) {
-      iframe.contentWindow.postMessage({ type: 'pc:apply-patch', patch }, '*')
+      iframe.contentWindow.postMessage({ type: 'pc:apply-patch', patch }, window.location.origin)
     }
   }, [editingIndex])
 
+  const handleCodeSaved = useCallback(() => {
+    if (codeEditingIndex !== null) {
+      setRefreshKeys(prev => ({ ...prev, [codeEditingIndex]: (prev[codeEditingIndex] || 0) + 1 }))
+    }
+  }, [codeEditingIndex])
+
   const editingItem = editingIndex !== null ? items[editingIndex] : null
+  const codeEditingItem = codeEditingIndex !== null ? items[codeEditingIndex] : null
 
   if (items.length === 0) {
     return (
@@ -78,55 +82,80 @@ export function Canvas({ items, onRemove, onMove }: Props) {
           )}
         </div>
         <div className="canvas-blocks">
-          {items.map((item, i) => (
-            <div
-              key={item.canvas.id}
-              className={`canvas-block ${dragIndex === i ? 'dragging' : ''} ${dragOverIndex === i ? 'drag-over' : ''} ${editingIndex === i ? 'editing' : ''}`}
-              draggable={editingIndex === null}
-              onDragStart={() => handleDragStart(i)}
-              onDragOver={e => handleDragOver(e, i)}
-              onDrop={() => handleDrop(i)}
-              onDragEnd={handleDragEnd}
-            >
-              <div className="canvas-block-toolbar">
-                <span className="drag-handle">&#9776;</span>
-                <span className="canvas-block-badge" style={{ background: FAMILY_COLORS[item.section.block_family] || '#94a3b8' }}>
-                  {item.section.block_family}
-                </span>
-                <span className="canvas-block-source">
-                  {item.section.source_sites?.normalized_domain || ''}
-                </span>
-                <div className="canvas-block-actions">
-                  <button
-                    className={`edit-btn ${editingIndex === i ? 'active' : ''}`}
-                    onClick={() => {
-                      setEditingIndex(editingIndex === i ? null : i)
-                      setSelectedNode(null)
-                    }}
-                  >
-                    {editingIndex === i ? '閉じる' : '編集'}
-                  </button>
-                  <button className="move-btn" onClick={() => i > 0 && onMove(i, i - 1)} disabled={i === 0}>&#9650;</button>
-                  <button className="move-btn" onClick={() => i < items.length - 1 && onMove(i, i + 1)} disabled={i === items.length - 1}>&#9660;</button>
-                  <button className="canvas-remove-btn" onClick={() => onRemove(item.canvas.id)}>&times;</button>
+          {items.map((item, i) => {
+            const rk = refreshKeys[i] || 0
+            const htmlUrlWithKey = item.section.htmlUrl
+              ? `${item.section.htmlUrl}${item.section.htmlUrl.includes('?') ? '&' : '?'}v=${rk}`
+              : item.section.htmlUrl
+
+            return (
+              <div
+                key={item.canvas.id}
+                className={`canvas-block ${dragIndex === i ? 'dragging' : ''} ${dragOverIndex === i ? 'drag-over' : ''} ${editingIndex === i ? 'editing' : ''}`}
+                tabIndex={0}
+                role="group"
+                aria-label={`Block ${i + 1}: ${item.section.block_family}`}
+                draggable={editingIndex === null}
+                onDragStart={() => handleDragStart(i)}
+                onDragOver={e => handleDragOver(e, i)}
+                onDrop={() => handleDrop(i)}
+                onDragEnd={handleDragEnd}
+                onKeyDown={e => {
+                  if (e.key === 'Delete' || e.key === 'Backspace') {
+                    if (editingIndex === null && document.activeElement === e.currentTarget) {
+                      e.preventDefault()
+                      onRemove(item.canvas.id)
+                    }
+                  }
+                }}
+              >
+                <div className="canvas-block-toolbar">
+                  <span className="drag-handle" aria-label="Drag to reorder">&#9776;</span>
+                  <span className="canvas-block-badge" style={{ background: FAMILY_COLORS[item.section.block_family] || '#94a3b8' }}>
+                    {item.section.block_family}
+                  </span>
+                  <span className="canvas-block-source">
+                    {item.section.source_sites?.normalized_domain || ''}
+                  </span>
+                  <div className="canvas-block-actions">
+                    <button
+                      className="code-btn"
+                      onClick={() => setCodeEditingIndex(codeEditingIndex === i ? null : i)}
+                      title="HTMLコード編集"
+                      aria-label="Edit HTML code"
+                    >
+                      &lt;/&gt;
+                    </button>
+                    <button
+                      className={`edit-btn ${editingIndex === i ? 'active' : ''}`}
+                      onClick={() => {
+                        setEditingIndex(editingIndex === i ? null : i)
+                        setSelectedNode(null)
+                      }}
+                      aria-label={editingIndex === i ? 'Close visual editor' : 'Open visual editor'}
+                    >
+                      {editingIndex === i ? '閉じる' : '編集'}
+                    </button>
+                    <button className="move-btn" onClick={() => i > 0 && onMove(i, i - 1)} disabled={i === 0} aria-label="Move block up">&#9650;</button>
+                    <button className="move-btn" onClick={() => i < items.length - 1 && onMove(i, i + 1)} disabled={i === items.length - 1} aria-label="Move block down">&#9660;</button>
+                    <button className="canvas-remove-btn" onClick={() => onRemove(item.canvas.id)} aria-label="Remove block">&times;</button>
+                  </div>
+                </div>
+                <div className="canvas-block-preview">
+                  {editingIndex === i ? (
+                    <EditableSourceFrame
+                      sectionId={item.section.id}
+                      onNodeSelect={handleNodeSelect}
+                    />
+                  ) : (
+                    <SourcePreviewFrame
+                      htmlUrl={htmlUrlWithKey}
+                    />
+                  )}
                 </div>
               </div>
-              <div className="canvas-block-preview">
-                {editingIndex === i ? (
-                  <EditableSourceFrame
-                    sectionId={item.section.id}
-                    maxHeight={800}
-                    onNodeSelect={handleNodeSelect}
-                  />
-                ) : (
-                  <SourcePreviewFrame
-                    htmlUrl={item.section.htmlUrl}
-                    maxHeight={600}
-                  />
-                )}
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </main>
 
@@ -136,6 +165,14 @@ export function Canvas({ items, onRemove, onMove }: Props) {
           selectedNode={selectedNode}
           onApplyPatch={handleApplyPatch}
           patchSetId={null}
+        />
+      )}
+
+      {codeEditingItem && (
+        <CodeEditor
+          sectionId={codeEditingItem.section.id}
+          onClose={() => setCodeEditingIndex(null)}
+          onSaved={handleCodeSaved}
         />
       )}
     </div>

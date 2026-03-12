@@ -9,6 +9,7 @@
  */
 import {
   claimQueuedJob,
+  cleanupOldData,
   createSectionDomSnapshot,
   createSourcePage,
   createSourceSection,
@@ -30,9 +31,18 @@ import { extractStyleSummary, generateLayoutSignature } from './style-extractor.
 import { classifySection, type RawSection } from './classifier.js'
 import { canonicalizeSection } from './canonicalizer.js'
 import { parseSectionDOM } from './dom-parser.js'
+import { logger } from './logger.js'
 
 const WORKER_ID = `worker-${process.pid}`
 const POLL_INTERVAL = 3000
+const MAX_RETRIES = 3
+const RETRY_BASE_DELAY_S = 5
+const DATA_RETENTION_DAYS = Number(process.env.DATA_RETENTION_DAYS) || 30
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
+
+let shuttingDown = false
+process.on('SIGTERM', () => { shuttingDown = true; logger.info('Shutdown signal received', { signal: 'SIGTERM', workerId: WORKER_ID }) })
+process.on('SIGINT', () => { shuttingDown = true; logger.info('Shutdown signal received', { signal: 'SIGINT', workerId: WORKER_ID }) })
 
 async function uploadBuffer(bucket: string, path: string, data: Buffer | string, contentType: string): Promise<string> {
   const buffer = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data
@@ -46,7 +56,7 @@ async function uploadBuffer(bucket: string, path: string, data: Buffer | string,
     const { error } = await supabaseAdmin.storage.from(bucket).upload(path, buffer, { contentType, upsert: true })
     if (!error) return path
     if (attempt < 2 && /timeout|gateway|5\d\d/i.test(error.message)) {
-      console.warn(`Upload retry ${attempt + 1} for ${bucket}/${path}: ${error.message}`)
+      logger.warn('Upload retry', { attempt: attempt + 1, bucket, path, error: error.message })
       await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
       continue
     }
@@ -55,65 +65,22 @@ async function uploadBuffer(bucket: string, path: string, data: Buffer | string,
   return path
 }
 
+/**
+ * sed -i 's|originalUrl|localPath|g' 相当のシンプルな一括置換。
+ * URLは長い順にソート済みなので部分一致を回避できる。
+ */
 function rewriteStoredHtml(
   html: string,
-  finalPageUrl: string,
-  pageOrigin: string,
+  _finalPageUrl: string,
+  _pageOrigin: string,
   sortedEntries: Array<[string, string]>,
-  urlMap: Map<string, string>
+  _urlMap: Map<string, string>
 ) {
-  let nextHtml = html
-
-  for (const [originalUrl, signedUrl] of sortedEntries) {
-    nextHtml = nextHtml.split(originalUrl).join(signedUrl)
+  let result = html
+  for (const [originalUrl, localPath] of sortedEntries) {
+    result = result.split(originalUrl).join(localPath)
   }
-
-  nextHtml = nextHtml.replace(
-    /(src|href|poster|action)=(["'])(?!data:|https?:\/\/|\/\/|#|mailto:|tel:|javascript:)((?:(?!\2).)*)\2/gi,
-    (_match, attr, q, rawPath) => {
-      try {
-        const resolved = new URL(rawPath, finalPageUrl).href
-        const signed = urlMap.get(resolved)
-        if (signed) return `${attr}=${q}${signed}${q}`
-      } catch {}
-      return `${attr}=${q}${pageOrigin}/${String(rawPath).replace(/^\//, '')}${q}`
-    }
-  )
-
-  nextHtml = nextHtml.replace(
-    /srcset=(["'])(.*?)\1/gi,
-    (_match, q, srcsetValue: string) => {
-      const rewritten = srcsetValue
-        .split(',')
-        .map((candidate: string) => {
-          const trimmed = candidate.trim()
-          if (!trimmed) return trimmed
-          const [rawUrl, descriptor] = trimmed.split(/\s+/, 2)
-          let nextUrl = rawUrl
-          try {
-            const resolved = new URL(rawUrl, finalPageUrl).href
-            nextUrl = urlMap.get(resolved) || resolved
-          } catch {}
-          return descriptor ? `${nextUrl} ${descriptor}` : nextUrl
-        })
-        .join(', ')
-      return `srcset=${q}${rewritten}${q}`
-    }
-  )
-
-  nextHtml = nextHtml.replace(
-    /url\(\s*(['"]?)(?!data:|https?:\/\/|\/\/)([^'")]+)\1\s*\)/gi,
-    (match, q, rawPath) => {
-      try {
-        const resolved = new URL(rawPath, finalPageUrl).href
-        const signed = urlMap.get(resolved)
-        if (signed) return `url(${q}${signed}${q})`
-      } catch {}
-      return match
-    }
-  )
-
-  return nextHtml
+  return result
 }
 
 async function claimJob(): Promise<any | null> {
@@ -125,6 +92,7 @@ async function claimJob(): Promise<any | null> {
     .from('crawl_runs')
     .update({ status: 'claimed', worker_id: WORKER_ID, started_at: new Date().toISOString() })
     .eq('status', 'queued')
+    .or(`run_after.is.null,run_after.lte.${new Date().toISOString()}`)
     .order('queued_at', { ascending: true })
     .limit(1)
     .select('*, source_sites(*)')
@@ -265,7 +233,7 @@ async function markSiteAnalyzed(siteId: string) {
 async function processJob(job: any) {
   const site = job.source_sites
   const url = site.homepage_url
-  console.log(`[${WORKER_ID}] Processing: ${url}`)
+  logger.info('Job started', { jobId: job.id, siteId: site.id, url, workerId: WORKER_ID })
 
   await setCrawlRunStatus(job.id, { status: 'rendering' })
 
@@ -275,9 +243,9 @@ async function processJob(job: any) {
     const page = await browser.newPage()
 
     // ========== Phase 1: Complete Site Download ==========
-    console.log(`[${WORKER_ID}] Phase 1: Downloading site...`)
+    logger.info('Phase 1: Downloading site', { jobId: job.id, url })
     const dl = await downloadSite(page, url, site.id, job.id)
-    console.log(`[${WORKER_ID}] Downloaded: ${dl.title} | ${dl.cssFiles.length} CSS, ${dl.imageFiles.length} images, ${dl.fontFiles.length} fonts`)
+    logger.info('Download complete', { jobId: job.id, title: dl.title, cssCount: dl.cssFiles.length, imageCount: dl.imageFiles.length, fontCount: dl.fontFiles.length })
 
     // ========== Phase 2: Store page-level data ==========
     await setCrawlRunStatus(job.id, { status: 'parsed' })
@@ -293,7 +261,7 @@ async function processJob(job: any) {
       pageScreenshotPath = `${site.id}/${job.id}/fullpage.png`
       await uploadBuffer(STORAGE_BUCKETS.PAGE_SCREENSHOTS, pageScreenshotPath, fullScreenshot, 'image/png')
     } catch (ssErr: any) {
-      console.warn(`[${WORKER_ID}] Page screenshot failed: ${ssErr.message}`)
+      logger.warn('Page screenshot failed', { jobId: job.id, error: ssErr.message })
     }
 
     // CSS bundle path (already uploaded by downloadSite)
@@ -336,7 +304,7 @@ async function processJob(job: any) {
     await setCrawlRunStatus(job.id, { status: 'normalizing' })
 
     const sections = await detectSections(page)
-    console.log(`[${WORKER_ID}] Detected ${sections.length} sections`)
+    logger.info('Sections detected', { jobId: job.id, sectionCount: sections.length })
 
     // Build URL rewrite map for section HTML
     const urlMap = new Map<string, string>()
@@ -349,7 +317,7 @@ async function processJob(job: any) {
     let sectionCount = 0
 
     for (const section of sections) {
-      console.log(`[${WORKER_ID}] Section ${section.index}/${sections.length}: ${section.tagName} (${Math.round(section.boundingBox.height)}px)`)
+      logger.debug('Processing section', { jobId: job.id, sectionIndex: section.index, total: sections.length, tagName: section.tagName, height: Math.round(section.boundingBox.height) })
 
       // Classify
       const rawForClassifier: RawSection = {
@@ -391,7 +359,7 @@ async function processJob(job: any) {
           await uploadBuffer(STORAGE_BUCKETS.SECTION_THUMBNAILS, thumbnailPath, screenshotBuf, 'image/png')
         }
       } catch (thumbErr: any) {
-        console.warn(`[${WORKER_ID}] Thumbnail failed for section ${section.index}: ${thumbErr.message}`)
+        logger.warn('Thumbnail failed', { jobId: job.id, sectionIndex: section.index, error: thumbErr.message })
       }
 
       // Style summary + layout signature
@@ -460,7 +428,7 @@ async function processJob(job: any) {
           await storeSectionNodes(nodeRecords)
         }
       } catch (snapshotErr: any) {
-        console.warn(`[${WORKER_ID}] DOM snapshot failed for section ${section.index}: ${snapshotErr.message}`)
+        logger.warn('DOM snapshot failed', { jobId: job.id, sectionIndex: section.index, error: snapshotErr.message })
       }
 
       // Store canonical block_instance
@@ -499,28 +467,73 @@ async function processJob(job: any) {
 
     await markSiteAnalyzed(site.id)
 
-    console.log(`[${WORKER_ID}] Done: ${url} → ${sectionCount} sections, ${dl.allAssets.length} assets`)
+    logger.info('Job completed', { jobId: job.id, siteId: site.id, url, sectionCount, assetCount: dl.allAssets.length })
 
   } catch (err: any) {
-    console.error(`[${WORKER_ID}] Error:`, err.message)
-    await failJob(job.id, 'PROCESSING_ERROR', err.message)
+    const retryCount = Number(job.retry_count) || 0
+    if (retryCount < MAX_RETRIES) {
+      const nextRetry = retryCount + 1
+      const delaySec = RETRY_BASE_DELAY_S * Math.pow(3, retryCount) // 5s, 15s, 45s
+      const runAfter = new Date(Date.now() + delaySec * 1000).toISOString()
+      logger.warn('Job failed, scheduling retry', { jobId: job.id, attempt: nextRetry, maxRetries: MAX_RETRIES, delaySec, error: err.message })
+      await setCrawlRunStatus(job.id, {
+        status: 'queued',
+        retry_count: nextRetry,
+        run_after: runAfter,
+        worker_id: null,
+        started_at: null,
+        error_message: err.message
+      })
+    } else {
+      logger.error('Job permanently failed', { jobId: job.id, retries: MAX_RETRIES, error: err.message })
+      await failJob(job.id, 'PROCESSING_ERROR', `Failed after ${MAX_RETRIES} retries: ${err.message}`)
+    }
   } finally {
     await browser.close()
   }
 }
 
-async function pollLoop() {
-  console.log(`[${WORKER_ID}] Worker v3 started, polling every ${POLL_INTERVAL}ms`)
+async function runCleanup() {
+  if (HAS_SUPABASE) {
+    // TODO: Implement Supabase cleanup via RPC or scheduled SQL function
+    return
+  }
 
-  while (true) {
+  try {
+    const result = await cleanupOldData(DATA_RETENTION_DAYS)
+    if (result.deletedCrawlRuns > 0) {
+      logger.info('Data cleanup completed', { retentionDays: DATA_RETENTION_DAYS, ...result })
+    } else {
+      logger.debug('Data cleanup: nothing to remove', { retentionDays: DATA_RETENTION_DAYS })
+    }
+  } catch (err: any) {
+    logger.error('Data cleanup failed', { error: err.message })
+  }
+}
+
+async function pollLoop() {
+  logger.info('Worker started', { workerId: WORKER_ID, pollIntervalMs: POLL_INTERVAL })
+
+  // Run cleanup once at startup
+  await runCleanup()
+
+  // Schedule periodic cleanup every 24 hours
+  const cleanupTimer = setInterval(runCleanup, CLEANUP_INTERVAL_MS)
+
+  while (!shuttingDown) {
     try {
       const job = await claimJob()
       if (job) await processJob(job)
     } catch (err: any) {
-      console.error(`[${WORKER_ID}] Poll error:`, err.message)
+      logger.error('Poll error', { workerId: WORKER_ID, error: err.message })
     }
+    if (shuttingDown) break
     await new Promise(r => setTimeout(r, POLL_INTERVAL))
   }
+
+  clearInterval(cleanupTimer)
+  logger.info('Worker shut down gracefully', { workerId: WORKER_ID })
+  process.exit(0)
 }
 
 pollLoop()

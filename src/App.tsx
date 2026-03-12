@@ -5,18 +5,74 @@ import { PartsPanel } from './components/PartsPanel'
 import { Canvas } from './components/Canvas'
 import { Preview } from './components/Preview'
 import { Library } from './components/Library'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import './styles.css'
 
 type View = 'editor' | 'preview' | 'library'
 
+const CANVAS_STORAGE_KEY = 'partcopy:canvas'
+const CANVAS_STORAGE_VERSION = 1
+
+function loadCanvasFromStorage(): CanvasBlock[] {
+  try {
+    const raw = localStorage.getItem(CANVAS_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!parsed || parsed.version !== CANVAS_STORAGE_VERSION) return []
+    return Array.isArray(parsed.canvas) ? parsed.canvas : []
+  } catch { return [] }
+}
+
 export default function App() {
   const [sections, setSections] = useState<SourceSection[]>([])
-  const [canvas, setCanvas] = useState<CanvasBlock[]>([])
+  const [canvas, setCanvas] = useState<CanvasBlock[]>(loadCanvasFromStorage)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<string | null>(null)
   const [view, setView] = useState<View>('editor')
   const pollRef = useRef<NodeJS.Timeout | null>(null)
+
+  // Persist canvas to localStorage (debounced to avoid excessive writes)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      localStorage.setItem(CANVAS_STORAGE_KEY, JSON.stringify({ version: CANVAS_STORAGE_VERSION, canvas }))
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [canvas])
+
+  // Restore sections for canvas items on mount
+  useEffect(() => {
+    const stored = loadCanvasFromStorage()
+    if (stored.length === 0) return
+    const sectionIds = [...new Set(stored.map(c => c.sectionId))]
+    Promise.all(
+      sectionIds.map(id =>
+        fetch(`/api/sections/${id}/html`)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => data ? { id, htmlUrl: `/api/sections/${id}/render` } : null)
+          .catch(() => null)
+      )
+    ).then(results => {
+      // Fetch full section data from library
+      fetch(`/api/library?limit=200`)
+        .then(r => r.json())
+        .then(data => {
+          const libSections: SourceSection[] = data.sections || []
+          const libMap = new Map(libSections.map((s: SourceSection) => [s.id, s]))
+          setSections(prev => {
+            const seen = new Set(prev.map(s => s.id))
+            const next = [...prev]
+            for (const id of sectionIds) {
+              if (seen.has(id) || !libMap.has(id)) continue
+              seen.add(id)
+              next.push(libMap.get(id)!)
+            }
+            return next
+          })
+        })
+        .catch(() => {})
+    })
+  }, [])
   const familyCount = new Set(sections.map(section => section.block_family)).size
   const sourceCount = new Set(
     sections
@@ -95,7 +151,10 @@ export default function App() {
   }, [pollJob])
 
   const addToCanvas = useCallback((sectionId: string) => {
-    setCanvas(prev => [...prev, { id: crypto.randomUUID(), sectionId, position: prev.length }])
+    setCanvas(prev => {
+      if (prev.some(c => c.sectionId === sectionId)) return prev
+      return [...prev, { id: crypto.randomUUID(), sectionId, position: prev.length }]
+    })
   }, [])
 
   const addSavedToCanvas = useCallback((section: SourceSection) => {
@@ -104,7 +163,10 @@ export default function App() {
       if (prev.find(s => s.id === section.id)) return prev
       return [...prev, section]
     })
-    setCanvas(prev => [...prev, { id: crypto.randomUUID(), sectionId: section.id, position: prev.length }])
+    setCanvas(prev => {
+      if (prev.some(c => c.sectionId === section.id)) return prev
+      return [...prev, { id: crypto.randomUUID(), sectionId: section.id, position: prev.length }]
+    })
     setView('editor')
   }, [])
 
@@ -121,7 +183,10 @@ export default function App() {
     })
   }, [])
 
-  const removeSection = useCallback((sectionId: string) => {
+  const removeSection = useCallback(async (sectionId: string) => {
+    try {
+      await fetch(`/api/sections/${sectionId}`, { method: 'DELETE' })
+    } catch {}
     setSections(prev => prev.filter(s => s.id !== sectionId))
     setCanvas(prev => prev.filter(c => c.sectionId !== sectionId))
   }, [])
@@ -133,6 +198,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <ErrorBoundary>
       <header className="app-header">
         <div className="app-logo">
           <h1>PARTCOPY</h1>
@@ -184,6 +250,7 @@ export default function App() {
       {view === 'preview' && <Preview items={canvasItems} />}
 
       {view === 'library' && <Library onAddToCanvas={addSavedToCanvas} />}
+      </ErrorBoundary>
     </div>
   )
 }

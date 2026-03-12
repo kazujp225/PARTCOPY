@@ -17,6 +17,7 @@ import { collectCSSChunks, resolveCSSUrls } from './network-recorder.js'
 import { writeStoredFile, getStoredFileUrl } from './local-store.js'
 import { HAS_SUPABASE, supabaseAdmin } from './supabase.js'
 import { STORAGE_BUCKETS } from './storage-config.js'
+import { logger } from './logger.js'
 
 export interface DownloadedAsset {
   originalUrl: string
@@ -38,6 +39,16 @@ export interface SiteDownloadResult {
 }
 
 const SIGNED_URL_EXPIRY = 60 * 60 * 24 * 30 // 30日
+
+/**
+ * Promise に時間制限を設ける。超過時はエラーを投げる。
+ */
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  const timer = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`Timeout: ${label} exceeded ${ms}ms`)), ms)
+  )
+  return Promise.race([promise, timer])
+}
 
 /**
  * URLからバイナリデータを直接ダウンロード（curl相当）
@@ -107,7 +118,7 @@ async function extractUrlsFromPage(page: Page): Promise<{
   fontCssUrls: string[]
   scriptUrls: string[]
 }> {
-  return page.evaluate(() => {
+  return withTimeout(page.evaluate(() => {
     if (typeof (globalThis as any).__name === 'undefined') (globalThis as any).__name = (t: any) => t
     const cssUrls: string[] = []
     const imageUrls: string[] = []
@@ -181,7 +192,7 @@ async function extractUrlsFromPage(page: Page): Promise<{
       fontCssUrls: [...new Set(fontCssUrls)],
       scriptUrls: [...new Set(scriptUrls)]
     }
-  })
+  }), 10000, 'extractUrlsFromPage')
 }
 
 /**
@@ -222,28 +233,35 @@ export async function downloadSite(
   await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 })
 
-  // Lazy-load scroll
-  await page.evaluate(async () => {
-    if (typeof (globalThis as any).__name === 'undefined') (globalThis as any).__name = (t: any) => t
-    const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
-    const totalHeight = document.body.scrollHeight
-    const step = window.innerHeight
-    for (let y = 0; y < totalHeight; y += step) {
-      window.scrollTo(0, y)
-      await delay(200)
-    }
-    window.scrollTo(0, 0)
-  })
+  // Lazy-load scroll (timeout 30s to avoid hanging on infinite-scroll pages)
+  await withTimeout(
+    page.evaluate(async () => {
+      if (typeof (globalThis as any).__name === 'undefined') (globalThis as any).__name = (t: any) => t
+      const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
+      const totalHeight = document.body.scrollHeight
+      const step = window.innerHeight
+      for (let y = 0; y < totalHeight; y += step) {
+        window.scrollTo(0, y)
+        await delay(200)
+      }
+      window.scrollTo(0, 0)
+    }),
+    30000,
+    'lazy-scroll'
+  )
   await new Promise(r => setTimeout(r, 1000))
 
   const finalUrl = page.url()
   const pageOrigin = new URL(finalUrl).origin
   const title = await page.title()
-  const lang = await page.evaluate(() => document.documentElement.lang || 'ja')
+  const lang = await withTimeout(
+    page.evaluate(() => document.documentElement.lang || 'ja'),
+    10000, 'lang-detect'
+  )
 
   // Step 2: URL抽出
   const { cssUrls, imageUrls, fontCssUrls } = await extractUrlsFromPage(page)
-  console.log(`  URLs found: ${cssUrls.length} CSS, ${imageUrls.length} images, ${fontCssUrls.length} font CSS`)
+  logger.info('URLs extracted from page', { cssCount: cssUrls.length, imageCount: imageUrls.length, fontCssCount: fontCssUrls.length })
 
   const cssChunks = await collectCSSChunks(page)
   let allCssContent = cssChunks
@@ -287,7 +305,7 @@ export async function downloadSite(
     /\.(woff2?|ttf|eot|otf)(\?|$)/i.test(u)
   ))]
 
-  console.log(`  Total: ${allImageUrls.length} images, ${allFontUrls.length} fonts to download`)
+  logger.info('Asset download starting', { totalImages: allImageUrls.length, totalFonts: allFontUrls.length })
 
   // Step 5: 画像ダウンロード（並列、最大30同時）
   const imageFiles: DownloadedAsset[] = []
@@ -313,7 +331,7 @@ export async function downloadSite(
       } catch { return null }
     }))
   }
-  console.log(`  Images downloaded: ${imageFiles.length}/${allImageUrls.length}`)
+  logger.info('Images downloaded', { downloaded: imageFiles.length, total: allImageUrls.length })
 
   // Step 6: フォントダウンロード
   const fontFiles: DownloadedAsset[] = []
@@ -351,10 +369,10 @@ export async function downloadSite(
       } catch {}
     }
   }
-  console.log(`  Fonts downloaded: ${fontFiles.length}`)
+  logger.info('Fonts downloaded', { count: fontFiles.length })
 
   // Step 7: 最終HTMLを取得
-  let finalHtml = await page.content()
+  let finalHtml = await withTimeout(page.content(), 10000, 'page.content')
 
   // Step 8: 全てのURLを書き換え（HTML + CSS）
   // URLの長い順にソートして置換（部分一致を防ぐ）
@@ -382,8 +400,8 @@ export async function downloadSite(
         const signed = urlMap.get(resolved)
         if (signed) return `${attr}=${q}${signed}${q}`
       } catch {}
-      // フォールバック: pageOrigin + path
-      return `${attr}=${q}${pageOrigin}/${rawPath.replace(/^\//, '')}${q}`
+      // ダウンロードされなかったアセット — そのまま残す
+      return match
     }
   )
 

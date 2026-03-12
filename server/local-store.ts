@@ -371,8 +371,8 @@ export async function readStoredContentType(bucket: string, storagePath: string)
   }
 }
 
-export function getStoredFileUrl(bucket: string, storagePath: string) {
-  return `/api/storage/${encodeURIComponent(bucket)}?path=${encodeURIComponent(sanitizeStoragePath(storagePath))}`
+export function getStoredFileUrl(_bucket: string, storagePath: string) {
+  return `/assets/${sanitizeStoragePath(storagePath)}`
 }
 
 export async function getStoredFileResponse(bucket: string, storagePath: string) {
@@ -457,8 +457,10 @@ export async function getJob(jobId: string) {
 
 export async function claimQueuedJob(workerId: string) {
   return withWriteLock(async db => {
+    const nowMs = Date.now()
     const queued = [...db.crawl_runs]
       .filter(run => run.status === 'queued')
+      .filter(run => !run.run_after || new Date(run.run_after).getTime() <= nowMs)
       .sort((a, b) => new Date(a.queued_at).getTime() - new Date(b.queued_at).getTime())[0]
 
     if (!queued) return null
@@ -612,9 +614,12 @@ export async function listLibrarySections(filters: {
   const db = await readDb()
   const searchTerm = String(filters.q || '').trim().toLowerCase()
 
+  const sitesById = new Map(db.source_sites.map(s => [s.id, s]))
+  const pagesById = new Map(db.source_pages.map(p => [p.id, p]))
+
   let sections = db.source_sections.map(section => {
-    const site = db.source_sites.find(row => row.id === section.site_id)
-    const page = db.source_pages.find(row => row.id === section.page_id)
+    const site = sitesById.get(section.site_id)
+    const page = pagesById.get(section.page_id)
     return {
       ...section,
       source_sites: site
@@ -678,8 +683,9 @@ export async function listLibrarySections(filters: {
 
 export async function getGenreSummary() {
   const db = await readDb()
+  const sitesById = new Map(db.source_sites.map(s => [s.id, s]))
   const counts = db.source_sections.reduce<Record<string, number>>((acc, section) => {
-    const site = db.source_sites.find(row => row.id === section.site_id)
+    const site = sitesById.get(section.site_id)
     const genre = site?.genre || 'untagged'
     acc[genre] = (acc[genre] || 0) + 1
     return acc
@@ -833,6 +839,94 @@ export async function getPatches(patchSetId: string) {
       .filter(item => item.patch_set_id === patchSetId)
       .sort((a, b) => a.order_index - b.order_index)
   )
+}
+
+export async function cleanupOldData(retentionDays: number): Promise<{ deletedCrawlRuns: number; deletedPages: number; deletedSections: number; deletedSnapshots: number; deletedNodes: number; deletedStorageFiles: number }> {
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString()
+
+  return withWriteLock(async db => {
+    // Find crawl_runs older than retention period (by queued_at)
+    const oldRuns = db.crawl_runs.filter(run => run.queued_at < cutoff)
+    if (oldRuns.length === 0) {
+      return { deletedCrawlRuns: 0, deletedPages: 0, deletedSections: 0, deletedSnapshots: 0, deletedNodes: 0, deletedStorageFiles: 0 }
+    }
+
+    const oldRunIds = new Set(oldRuns.map(run => run.id))
+
+    // Find associated source_pages
+    const oldPages = db.source_pages.filter(page => oldRunIds.has(page.crawl_run_id))
+    const oldPageIds = new Set(oldPages.map(page => page.id))
+
+    // Find associated source_sections
+    const oldSections = db.source_sections.filter(section => oldPageIds.has(section.page_id))
+    const oldSectionIds = new Set(oldSections.map(section => section.id))
+
+    // Find associated snapshots
+    const oldSnapshots = db.section_dom_snapshots.filter(snap => oldSectionIds.has(snap.section_id))
+    const oldSnapshotIds = new Set(oldSnapshots.map(snap => snap.id))
+
+    // Collect storage paths to delete
+    const storagePaths: Array<{ bucket: string; path: string }> = []
+    for (const page of oldPages) {
+      if (page.final_html_path) storagePaths.push({ bucket: 'corpus-raw-html', path: page.final_html_path })
+      if (page.screenshot_storage_path) storagePaths.push({ bucket: 'corpus-page-screenshots', path: page.screenshot_storage_path })
+      if (page.request_log_path) storagePaths.push({ bucket: 'corpus-raw-html', path: page.request_log_path })
+      if (page.css_bundle_path) storagePaths.push({ bucket: 'corpus-raw-html', path: page.css_bundle_path })
+    }
+    for (const section of oldSections) {
+      if (section.raw_html_storage_path) storagePaths.push({ bucket: 'corpus-raw-html', path: section.raw_html_storage_path })
+      if (section.sanitized_html_storage_path) storagePaths.push({ bucket: 'corpus-sanitized-html', path: section.sanitized_html_storage_path })
+      if (section.thumbnail_storage_path) storagePaths.push({ bucket: 'corpus-section-thumbnails', path: section.thumbnail_storage_path })
+    }
+    for (const snap of oldSnapshots) {
+      if (snap.html_storage_path) storagePaths.push({ bucket: 'corpus-sanitized-html', path: snap.html_storage_path })
+      if (snap.dom_json_path) storagePaths.push({ bucket: 'corpus-sanitized-html', path: snap.dom_json_path })
+    }
+
+    // Delete storage files (best-effort)
+    let deletedStorageFiles = 0
+    for (const { bucket, path: storagePath } of storagePaths) {
+      try {
+        const { absolutePath } = resolveAbsoluteStoragePath(bucket, storagePath)
+        await rm(absolutePath, { force: true })
+        await rm(`${absolutePath}.meta.json`, { force: true })
+        deletedStorageFiles++
+      } catch {
+        // Ignore missing files
+      }
+    }
+
+    // Find patch sets for old sections
+    const oldPatchSetIds = new Set(
+      db.section_patch_sets
+        .filter(ps => oldSectionIds.has(ps.section_id))
+        .map(ps => ps.id)
+    )
+
+    // Remove records from DB
+    const deletedSnapshots = oldSnapshots.length
+    const deletedNodes = db.section_nodes.filter(node => oldSnapshotIds.has(node.snapshot_id)).length
+
+    db.section_patches = db.section_patches.filter(p => !oldPatchSetIds.has(p.patch_set_id))
+    db.section_patch_sets = db.section_patch_sets.filter(ps => !oldSectionIds.has(ps.section_id))
+    db.section_nodes = db.section_nodes.filter(node => !oldSnapshotIds.has(node.snapshot_id))
+    db.section_dom_snapshots = db.section_dom_snapshots.filter(snap => !oldSectionIds.has(snap.section_id))
+    db.block_instances = db.block_instances.filter(bi => !oldSectionIds.has(bi.source_section_id))
+    db.page_assets = db.page_assets.filter(pa => !oldPageIds.has(pa.page_id))
+    db.source_sections = db.source_sections.filter(section => !oldPageIds.has(section.page_id))
+    db.source_pages = db.source_pages.filter(page => !oldRunIds.has(page.crawl_run_id))
+    db.project_page_blocks = db.project_page_blocks.filter(block => !oldSectionIds.has(block.source_section_id))
+    db.crawl_runs = db.crawl_runs.filter(run => !oldRunIds.has(run.id))
+
+    return {
+      deletedCrawlRuns: oldRuns.length,
+      deletedPages: oldPages.length,
+      deletedSections: oldSections.length,
+      deletedSnapshots,
+      deletedNodes,
+      deletedStorageFiles
+    }
+  })
 }
 
 export async function createProjectPageBlock(record: JsonObject) {

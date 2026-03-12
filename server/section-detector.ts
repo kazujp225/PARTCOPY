@@ -56,11 +56,17 @@ export async function detectSections(page: Page): Promise<DetectedSection[]> {
     const HARD_SECTION_TAGS = new Set(['nav', 'header', 'footer'])
     const SECTIONISH_TAGS = new Set(['header', 'nav', 'main', 'section', 'article', 'aside', 'footer'])
     const MICRO_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'strong', 'em', 'small', 'label', 'li', 'dt', 'dd'])
-    const SECTION_HINT_RE = /\b(hero|feature|service|section|block|band|panel|faq|accordion|cta|contact|form|pricing|plan|footer|header|nav|menu|news|blog|voice|testimonial|company|about|gallery|works|flow|step|mv|fv|kv)\b/i
+    const SECTION_HINT_RE = /\b(hero|feature|service|section|block|band|panel|faq|accordion|cta|contact|form|pricing|plan|footer|header|nav|menu|news|blog|voice|testimonial|company|about|gallery|works|flow|step|mv|fv|kv)\b|(セクション|ブロック|コンテナ|ラッパー|エリア|コンテンツ)/i
+
+    const isHiddenElement = (el: Element): boolean => {
+      const cs = window.getComputedStyle(el)
+      return cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0'
+    }
 
     const visibleChildren = (el: Element) => Array.from(el.children).filter(child => {
       const tag = child.tagName.toLowerCase()
       if (IGNORE_TAGS.has(tag)) return false
+      if (isHiddenElement(child)) return false
       const rect = child.getBoundingClientRect()
       return rect.height >= MIN_HEIGHT && rect.width >= MIN_WIDTH
     })
@@ -275,6 +281,8 @@ export async function detectSections(page: Page): Promise<DetectedSection[]> {
     const seen = new Set<Element>()
     for (const el of finalSections) {
       if (seen.has(el)) continue
+      // Skip hidden elements (display:none, visibility:hidden, opacity:0)
+      if (isHiddenElement(el)) continue
       // Remove if fully contained by another stronger section
       const containedByOther = finalSections.some(o => (
         o !== el &&
