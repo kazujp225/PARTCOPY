@@ -13,7 +13,10 @@
  * curlで取れるものは全て取る。
  */
 import type { Page } from 'puppeteer'
-import { supabaseAdmin, STORAGE_BUCKETS } from './supabase.js'
+import { collectCSSChunks, resolveCSSUrls } from './network-recorder.js'
+import { writeStoredFile, getStoredFileUrl } from './local-store.js'
+import { HAS_SUPABASE, supabaseAdmin } from './supabase.js'
+import { STORAGE_BUCKETS } from './storage-config.js'
 
 export interface DownloadedAsset {
   originalUrl: string
@@ -83,6 +86,11 @@ async function uploadAndSign(
   data: Buffer,
   contentType: string
 ): Promise<string> {
+  if (!HAS_SUPABASE) {
+    await writeStoredFile(bucket, path, data, contentType)
+    return getStoredFileUrl(bucket, path)
+  }
+
   const { error } = await supabaseAdmin.storage.from(bucket).upload(path, data, { contentType, upsert: true })
   if (error) throw new Error(`Upload failed: ${error.message}`)
 
@@ -237,20 +245,21 @@ export async function downloadSite(
   const { cssUrls, imageUrls, fontCssUrls } = await extractUrlsFromPage(page)
   console.log(`  URLs found: ${cssUrls.length} CSS, ${imageUrls.length} images, ${fontCssUrls.length} font CSS`)
 
+  const cssChunks = await collectCSSChunks(page)
+  let allCssContent = cssChunks
+    .map(chunk => `/* ${chunk.scope}: ${chunk.sourceUrl} */\n${resolveCSSUrls(chunk.cssText, chunk.baseUrl)}`)
+    .join('\n\n')
+
   const allAssets: DownloadedAsset[] = []
   const urlMap = new Map<string, string>() // originalUrl → signedUrl
 
   // Step 3: CSS直接ダウンロード
   const cssFiles: DownloadedAsset[] = []
-  let allCssContent = ''
 
   for (let i = 0; i < cssUrls.length; i++) {
     const cssUrl = cssUrls[i]
     const file = await downloadFile(cssUrl)
     if (!file) { console.log(`  CSS skip (failed): ${cssUrl.slice(0, 80)}`); continue }
-
-    const cssText = file.data.toString('utf-8')
-    allCssContent += `\n/* === ${cssUrl} === */\n${cssText}\n`
 
     const storagePath = urlToStoragePath(`${baseDir}/css`, cssUrl, i)
     try {
@@ -266,22 +275,7 @@ export async function downloadSite(
   }
 
   // Step 4: CSS内の画像・フォントURLも抽出
-  const cssInternalUrls: string[] = []
-  for (const cssUrl of cssUrls) {
-    const urls = extractUrlsFromCSS(allCssContent, cssUrl)
-    cssInternalUrls.push(...urls)
-  }
-
-  // inline <style> タグのCSS内url()も
-  const inlineStyles = await page.evaluate(() => {
-    if (typeof (globalThis as any).__name === 'undefined') (globalThis as any).__name = (t: any) => t
-    return Array.from(document.querySelectorAll('style')).map(s => s.textContent || '')
-  })
-  for (const style of inlineStyles) {
-    allCssContent += `\n/* inline */\n${style}\n`
-    const urls = extractUrlsFromCSS(style, pageOrigin)
-    cssInternalUrls.push(...urls)
-  }
+  const cssInternalUrls = extractUrlsFromCSS(allCssContent, pageOrigin)
 
   // 全画像URL統合（HTML + CSS内）
   const allImageUrls = [...new Set([...imageUrls, ...cssInternalUrls.filter(u =>

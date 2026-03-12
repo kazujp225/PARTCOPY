@@ -7,19 +7,41 @@
  * 3. Classify + Canonicalize + Store each section (with rewritten URLs)
  * 4. DOM snapshot for editing
  */
-import { supabaseAdmin, STORAGE_BUCKETS } from './supabase.js'
+import {
+  claimQueuedJob,
+  createSectionDomSnapshot,
+  createSourcePage,
+  createSourceSection,
+  failCrawlRun,
+  findBlockVariantByKey,
+  insertBlockInstance,
+  insertPageAssets,
+  insertSectionNodes,
+  updateCrawlRun,
+  updateSourceSite,
+  writeStoredFile
+} from './local-store.js'
+import { HAS_SUPABASE, supabaseAdmin } from './supabase.js'
+import { STORAGE_BUCKETS } from './storage-config.js'
 import { launchBrowser } from './capture-runner.js'
 import { downloadSite } from './site-downloader.js'
 import { detectSections, screenshotSection } from './section-detector.js'
 import { extractStyleSummary, generateLayoutSignature } from './style-extractor.js'
 import { classifySection, type RawSection } from './classifier.js'
 import { canonicalizeSection } from './canonicalizer.js'
+import { parseSectionDOM } from './dom-parser.js'
 
 const WORKER_ID = `worker-${process.pid}`
 const POLL_INTERVAL = 3000
 
 async function uploadBuffer(bucket: string, path: string, data: Buffer | string, contentType: string): Promise<string> {
   const buffer = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data
+
+  if (!HAS_SUPABASE) {
+    await writeStoredFile(bucket, path, buffer, contentType)
+    return path
+  }
+
   for (let attempt = 0; attempt < 3; attempt++) {
     const { error } = await supabaseAdmin.storage.from(bucket).upload(path, buffer, { contentType, upsert: true })
     if (!error) return path
@@ -33,7 +55,72 @@ async function uploadBuffer(bucket: string, path: string, data: Buffer | string,
   return path
 }
 
+function rewriteStoredHtml(
+  html: string,
+  finalPageUrl: string,
+  pageOrigin: string,
+  sortedEntries: Array<[string, string]>,
+  urlMap: Map<string, string>
+) {
+  let nextHtml = html
+
+  for (const [originalUrl, signedUrl] of sortedEntries) {
+    nextHtml = nextHtml.split(originalUrl).join(signedUrl)
+  }
+
+  nextHtml = nextHtml.replace(
+    /(src|href|poster|action)=(["'])(?!data:|https?:\/\/|\/\/|#|mailto:|tel:|javascript:)((?:(?!\2).)*)\2/gi,
+    (_match, attr, q, rawPath) => {
+      try {
+        const resolved = new URL(rawPath, finalPageUrl).href
+        const signed = urlMap.get(resolved)
+        if (signed) return `${attr}=${q}${signed}${q}`
+      } catch {}
+      return `${attr}=${q}${pageOrigin}/${String(rawPath).replace(/^\//, '')}${q}`
+    }
+  )
+
+  nextHtml = nextHtml.replace(
+    /srcset=(["'])(.*?)\1/gi,
+    (_match, q, srcsetValue: string) => {
+      const rewritten = srcsetValue
+        .split(',')
+        .map((candidate: string) => {
+          const trimmed = candidate.trim()
+          if (!trimmed) return trimmed
+          const [rawUrl, descriptor] = trimmed.split(/\s+/, 2)
+          let nextUrl = rawUrl
+          try {
+            const resolved = new URL(rawUrl, finalPageUrl).href
+            nextUrl = urlMap.get(resolved) || resolved
+          } catch {}
+          return descriptor ? `${nextUrl} ${descriptor}` : nextUrl
+        })
+        .join(', ')
+      return `srcset=${q}${rewritten}${q}`
+    }
+  )
+
+  nextHtml = nextHtml.replace(
+    /url\(\s*(['"]?)(?!data:|https?:\/\/|\/\/)([^'")]+)\1\s*\)/gi,
+    (match, q, rawPath) => {
+      try {
+        const resolved = new URL(rawPath, finalPageUrl).href
+        const signed = urlMap.get(resolved)
+        if (signed) return `url(${q}${signed}${q})`
+      } catch {}
+      return match
+    }
+  )
+
+  return nextHtml
+}
+
 async function claimJob(): Promise<any | null> {
+  if (!HAS_SUPABASE) {
+    return claimQueuedJob(WORKER_ID)
+  }
+
   const { data, error } = await supabaseAdmin
     .from('crawl_runs')
     .update({ status: 'claimed', worker_id: WORKER_ID, started_at: new Date().toISOString() })
@@ -47,10 +134,132 @@ async function claimJob(): Promise<any | null> {
 }
 
 async function failJob(jobId: string, code: string, message: string) {
+  if (!HAS_SUPABASE) {
+    await failCrawlRun(jobId, code, message)
+    return
+  }
+
   await supabaseAdmin
     .from('crawl_runs')
     .update({ status: 'failed', error_code: code, error_message: message, finished_at: new Date().toISOString() })
     .eq('id', jobId)
+}
+
+async function setCrawlRunStatus(jobId: string, patch: Record<string, any>) {
+  if (!HAS_SUPABASE) {
+    await updateCrawlRun(jobId, patch)
+    return
+  }
+
+  await supabaseAdmin.from('crawl_runs').update(patch).eq('id', jobId)
+}
+
+async function createPageRecord(record: Record<string, any>) {
+  if (!HAS_SUPABASE) {
+    return createSourcePage(record as any)
+  }
+
+  const { data } = await supabaseAdmin
+    .from('source_pages')
+    .insert(record)
+    .select()
+    .single()
+  return data
+}
+
+async function storePageAssets(records: Record<string, any>[]) {
+  if (!records.length) return
+
+  if (!HAS_SUPABASE) {
+    await insertPageAssets(records)
+    return
+  }
+
+  await supabaseAdmin.from('page_assets').insert(records)
+}
+
+async function createSectionRecord(record: Record<string, any>) {
+  if (!HAS_SUPABASE) {
+    return createSourceSection(record as any)
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('source_sections')
+    .insert(record)
+    .select('id')
+    .single()
+
+  if (error || !data) {
+    throw new Error(error?.message || 'Failed to insert source_section')
+  }
+
+  return data
+}
+
+async function createSnapshotRecord(record: Record<string, any>) {
+  if (!HAS_SUPABASE) {
+    return createSectionDomSnapshot(record as any)
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('section_dom_snapshots')
+    .insert(record)
+    .select('id')
+    .single()
+
+  if (error || !data) {
+    throw new Error(error?.message || 'Failed to insert DOM snapshot')
+  }
+
+  return data
+}
+
+async function storeSectionNodes(records: Record<string, any>[]) {
+  if (!records.length) return
+
+  if (!HAS_SUPABASE) {
+    await insertSectionNodes(records as any)
+    return
+  }
+
+  await supabaseAdmin.from('section_nodes').insert(records)
+}
+
+async function findVariantRecord(variantKey: string) {
+  if (!HAS_SUPABASE) {
+    return findBlockVariantByKey(variantKey)
+  }
+
+  const { data } = await supabaseAdmin
+    .from('block_variants')
+    .select('id')
+    .eq('variant_key', variantKey)
+    .single()
+
+  return data
+}
+
+async function createBlockInstanceRecord(record: Record<string, any>) {
+  if (!HAS_SUPABASE) {
+    await insertBlockInstance(record)
+    return
+  }
+
+  await supabaseAdmin.from('block_instances').insert(record)
+}
+
+async function markSiteAnalyzed(siteId: string) {
+  const patch = {
+    status: 'analyzed',
+    last_crawled_at: new Date().toISOString()
+  }
+
+  if (!HAS_SUPABASE) {
+    await updateSourceSite(siteId, patch)
+    return
+  }
+
+  await supabaseAdmin.from('source_sites').update(patch).eq('id', siteId)
 }
 
 async function processJob(job: any) {
@@ -58,7 +267,7 @@ async function processJob(job: any) {
   const url = site.homepage_url
   console.log(`[${WORKER_ID}] Processing: ${url}`)
 
-  await supabaseAdmin.from('crawl_runs').update({ status: 'rendering' }).eq('id', job.id)
+  await setCrawlRunStatus(job.id, { status: 'rendering' })
 
   const browser = await launchBrowser()
 
@@ -71,7 +280,7 @@ async function processJob(job: any) {
     console.log(`[${WORKER_ID}] Downloaded: ${dl.title} | ${dl.cssFiles.length} CSS, ${dl.imageFiles.length} images, ${dl.fontFiles.length} fonts`)
 
     // ========== Phase 2: Store page-level data ==========
-    await supabaseAdmin.from('crawl_runs').update({ status: 'parsed' }).eq('id', job.id)
+    await setCrawlRunStatus(job.id, { status: 'parsed' })
 
     // Upload rewritten HTML
     const finalHtmlPath = `${site.id}/${job.id}/final.html`
@@ -96,22 +305,18 @@ async function processJob(job: any) {
     await uploadBuffer(STORAGE_BUCKETS.RAW_HTML, requestLogPath, requestLog, 'application/json')
 
     // Create source_page
-    const { data: sourcePage } = await supabaseAdmin
-      .from('source_pages')
-      .insert({
-        crawl_run_id: job.id,
-        site_id: site.id,
-        url: page.url(),
-        path: new URL(page.url()).pathname,
-        page_type: 'home',
-        title: dl.title,
-        screenshot_storage_path: pageScreenshotPath,
-        final_html_path: finalHtmlPath,
-        request_log_path: requestLogPath,
-        css_bundle_path: cssBundlePath
-      })
-      .select()
-      .single()
+    const sourcePage = await createPageRecord({
+      crawl_run_id: job.id,
+      site_id: site.id,
+      url: page.url(),
+      path: new URL(page.url()).pathname,
+      page_type: 'home',
+      title: dl.title,
+      screenshot_storage_path: pageScreenshotPath,
+      final_html_path: finalHtmlPath,
+      request_log_path: requestLogPath,
+      css_bundle_path: cssBundlePath
+    })
 
     if (!sourcePage) throw new Error('Failed to create source_page')
 
@@ -125,12 +330,10 @@ async function processJob(job: any) {
       size_bytes: a.size,
       status_code: 200
     }))
-    if (assetRecords.length > 0) {
-      await supabaseAdmin.from('page_assets').insert(assetRecords)
-    }
+    await storePageAssets(assetRecords)
 
     // ========== Phase 3: Section Detection ==========
-    await supabaseAdmin.from('crawl_runs').update({ status: 'normalizing' }).eq('id', job.id)
+    await setCrawlRunStatus(job.id, { status: 'normalizing' })
 
     const sections = await detectSections(page)
     console.log(`[${WORKER_ID}] Detected ${sections.length} sections`)
@@ -167,42 +370,17 @@ async function processJob(job: any) {
       }
       const classification = classifySection(rawForClassifier, section.index, sections.length)
       const canonical = canonicalizeSection(section, classification.type)
+      const finalPageUrl = page.url()
 
       // Rewrite URLs in section HTML
-      let sectionHtml = section.outerHTML
-      // まず絶対URLの直接置換
-      for (const [originalUrl, signedUrl] of sortedEntries) {
-        sectionHtml = sectionHtml.split(originalUrl).join(signedUrl)
-      }
-      // 相対/ルート相対URLをresolveしてurlMapで置換
-      const finalPageUrl = page.url()
-      sectionHtml = sectionHtml.replace(
-        /(src|href|srcset|poster|action)=(["'])(?!data:|https?:\/\/|\/\/|#|mailto:|tel:|javascript:)((?:(?!\2).)*)\2/gi,
-        (match, attr, q, rawPath) => {
-          try {
-            const resolved = new URL(rawPath, finalPageUrl).href
-            const signed = urlMap.get(resolved)
-            if (signed) return `${attr}=${q}${signed}${q}`
-          } catch {}
-          return `${attr}=${q}${dl.pageOrigin}/${rawPath.replace(/^\//, '')}${q}`
-        }
-      )
-      // background-image url() in inline styles
-      sectionHtml = sectionHtml.replace(
-        /url\(\s*(['"]?)(?!data:|https?:\/\/|\/\/)([^'")]+)\1\s*\)/gi,
-        (match, q, rawPath) => {
-          try {
-            const resolved = new URL(rawPath, finalPageUrl).href
-            const signed = urlMap.get(resolved)
-            if (signed) return `url(${q}${signed}${q})`
-          } catch {}
-          return match
-        }
-      )
-
+      const sectionHtml = rewriteStoredHtml(section.outerHTML, finalPageUrl, dl.pageOrigin, sortedEntries, urlMap)
       // Upload rewritten section HTML
       const rawPath = `${site.id}/${job.id}/raw_${section.index}.html`
       await uploadBuffer(STORAGE_BUCKETS.RAW_HTML, rawPath, sectionHtml, 'text/html')
+
+      const previewHtml = rewriteStoredHtml(section.previewHTML, finalPageUrl, dl.pageOrigin, sortedEntries, urlMap)
+      const previewPath = `${site.id}/${job.id}/preview_${section.index}.html`
+      await uploadBuffer(STORAGE_BUCKETS.SANITIZED_HTML, previewPath, previewHtml, 'text/html')
 
       // QA screenshot - non-fatal
       let thumbnailPath: string | undefined
@@ -221,7 +399,7 @@ async function processJob(job: any) {
       const layoutSig = generateLayoutSignature(section)
 
       // Store source_section
-      await supabaseAdmin.from('source_sections').insert({
+      const sectionRow = await createSectionRecord({
         page_id: sourcePage.id,
         site_id: site.id,
         order_index: section.index,
@@ -229,7 +407,7 @@ async function processJob(job: any) {
         tag_name: section.tagName,
         bbox_json: section.boundingBox,
         raw_html_storage_path: rawPath,
-        sanitized_html_storage_path: rawPath, // same: URLs already rewritten
+        sanitized_html_storage_path: previewPath,
         thumbnail_storage_path: thumbnailPath,
         block_family: classification.type,
         block_variant: canonical?.variant,
@@ -246,39 +424,65 @@ async function processJob(job: any) {
         computed_style_summary: styleSummary
       })
 
+      try {
+        const snapshot = await parseSectionDOM(page, section, section.index)
+        if (snapshot.resolvedHtml && snapshot.nodes.length > 0) {
+          const resolvedHtml = rewriteStoredHtml(snapshot.resolvedHtml, finalPageUrl, dl.pageOrigin, sortedEntries, urlMap)
+          const resolvedPath = `${site.id}/${job.id}/resolved_${section.index}.html`
+          const domJsonPath = `${site.id}/${job.id}/dom_${section.index}.json`
+
+          await uploadBuffer(STORAGE_BUCKETS.SANITIZED_HTML, resolvedPath, resolvedHtml, 'text/html')
+          await uploadBuffer(STORAGE_BUCKETS.SANITIZED_HTML, domJsonPath, JSON.stringify(snapshot.nodes), 'application/json')
+
+          const snapshotRow = await createSnapshotRecord({
+            section_id: sectionRow.id,
+            snapshot_type: 'resolved',
+            html_storage_path: resolvedPath,
+            dom_json_path: domJsonPath,
+            node_count: snapshot.nodeCount,
+            css_strategy: 'resolved_inline'
+          })
+
+          const nodeRecords = snapshot.nodes.slice(0, 500).map(node => ({
+            snapshot_id: snapshotRow.id,
+            stable_key: node.stableKey,
+            node_type: node.nodeType,
+            tag_name: node.tagName,
+            order_index: node.orderIndex,
+            text_content: node.textContent,
+            attrs_jsonb: node.attrs,
+            bbox_json: node.bbox,
+            computed_style_jsonb: node.computedStyle,
+            editable: node.editable,
+            selector_path: node.selectorPath
+          }))
+
+          await storeSectionNodes(nodeRecords)
+        }
+      } catch (snapshotErr: any) {
+        console.warn(`[${WORKER_ID}] DOM snapshot failed for section ${section.index}: ${snapshotErr.message}`)
+      }
+
       // Store canonical block_instance
       if (canonical) {
-        const { data: sectionRow } = await supabaseAdmin
-          .from('source_sections')
-          .select('id')
-          .eq('page_id', sourcePage.id)
-          .eq('order_index', section.index)
-          .single()
+        const variantRow = await findVariantRecord(canonical.variant)
 
-        if (sectionRow) {
-          const { data: variantRow } = await supabaseAdmin
-            .from('block_variants')
-            .select('id')
-            .eq('variant_key', canonical.variant)
-            .single()
-
-          if (variantRow) {
-            await supabaseAdmin.from('block_instances').insert({
-              source_section_id: sectionRow.id,
-              block_variant_id: variantRow.id,
-              slot_values_jsonb: canonical.slots,
-              token_values_jsonb: canonical.tokens,
-              quality_score: canonical.qualityScore,
-              family_key: canonical.family,
-              variant_key: canonical.variant,
-              provenance_jsonb: {
-                pageId: sourcePage.id,
-                sectionId: sectionRow.id,
-                sourceUrl: page.url(),
-                domPath: section.domPath
-              }
-            })
-          }
+        if (variantRow) {
+          await createBlockInstanceRecord({
+            source_section_id: sectionRow.id,
+            block_variant_id: variantRow.id,
+            slot_values_jsonb: canonical.slots,
+            token_values_jsonb: canonical.tokens,
+            quality_score: canonical.qualityScore,
+            family_key: canonical.family,
+            variant_key: canonical.variant,
+            provenance_jsonb: {
+              pageId: sourcePage.id,
+              sectionId: sectionRow.id,
+              sourceUrl: page.url(),
+              domPath: section.domPath
+            }
+          })
         }
       }
 
@@ -286,17 +490,14 @@ async function processJob(job: any) {
     }
 
     // ========== Phase 5: Mark complete ==========
-    await supabaseAdmin.from('crawl_runs').update({
+    await setCrawlRunStatus(job.id, {
       status: 'done',
       page_count: 1,
       section_count: sectionCount,
       finished_at: new Date().toISOString()
-    }).eq('id', job.id)
+    })
 
-    await supabaseAdmin.from('source_sites').update({
-      status: 'analyzed',
-      last_crawled_at: new Date().toISOString()
-    }).eq('id', site.id)
+    await markSiteAnalyzed(site.id)
 
     console.log(`[${WORKER_ID}] Done: ${url} → ${sectionCount} sections, ${dl.allAssets.length} assets`)
 

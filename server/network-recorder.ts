@@ -18,6 +18,13 @@ export interface NetworkLog {
   cssBundle: string
 }
 
+export interface CSSChunk {
+  sourceUrl: string
+  baseUrl: string
+  cssText: string
+  scope: 'document' | 'shadow'
+}
+
 /**
  * Collect all CSS from the page after it has fully loaded.
  * Strategy:
@@ -25,61 +32,92 @@ export interface NetworkLog {
  * 2. Fetch cross-origin stylesheet hrefs via fetch() in page context
  * 3. Collect inline <style> tag contents
  */
-export async function collectPageCSS(page: Page): Promise<string> {
-  const css = await page.evaluate(async () => {
+export async function collectCSSChunks(page: Page): Promise<CSSChunk[]> {
+  return page.evaluate(async () => {
     if (typeof (globalThis as any).__name === 'undefined') (globalThis as any).__name = (t: any) => t
 
-    const parts: string[] = []
-    const fetchedUrls = new Set<string>()
+    const chunks: CSSChunk[] = []
+    const seen = new Set<string>()
 
-    // 1. Try to read cssRules from each stylesheet
-    for (const sheet of document.styleSheets) {
+    const pushChunk = (chunk: CSSChunk) => {
+      const cssText = chunk.cssText.trim()
+      if (!cssText) return
+      const key = `${chunk.scope}|${chunk.sourceUrl}|${cssText.slice(0, 200)}`
+      if (seen.has(key)) return
+      seen.add(key)
+      chunks.push({ ...chunk, cssText })
+    }
+
+    const readSheet = (sheet: CSSStyleSheet, scope: 'document' | 'shadow') => {
       const href = sheet.href || ''
       try {
-        // Same-origin sheets: read cssRules directly
-        let sheetCSS = ''
-        for (const rule of sheet.cssRules) {
-          sheetCSS += rule.cssText + '\n'
+        let cssText = ''
+        for (const rule of Array.from(sheet.cssRules)) {
+          cssText += `${rule.cssText}\n`
         }
-        if (sheetCSS) {
-          parts.push(`/* sheet: ${href || 'inline'} */\n${sheetCSS}`)
-          if (href) fetchedUrls.add(href)
-        }
+        pushChunk({
+          sourceUrl: href || 'inline',
+          baseUrl: href || document.baseURI,
+          cssText,
+          scope
+        })
+        return true
       } catch {
-        // Cross-origin: will fetch below
+        return false
       }
     }
 
-    // 2. Fetch cross-origin stylesheets
-    const linkHrefs = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
-      .map(l => (l as HTMLLinkElement).href)
-      .filter(h => h && !fetchedUrls.has(h))
-
-    for (const href of linkHrefs) {
+    const fetchCrossOriginSheet = async (href: string, scope: 'document' | 'shadow') => {
       try {
         const res = await fetch(href, { mode: 'cors', credentials: 'omit' })
-        if (res.ok) {
-          const text = await res.text()
-          parts.push(`/* fetched: ${href} */\n${text}`)
-        }
+        if (!res.ok) return
+        const text = await res.text()
+        pushChunk({
+          sourceUrl: href,
+          baseUrl: href,
+          cssText: text,
+          scope
+        })
       } catch {
-        // Some sheets may block CORS fetch too, skip
+        // Ignore inaccessible cross-origin CSS.
       }
     }
 
-    // 3. Inline <style> tags
-    const inlineStyles = Array.from(document.querySelectorAll('style'))
-      .map(s => s.textContent || '')
-      .filter(t => t.length > 0)
+    const collectRootSheets = async (root: Document | ShadowRoot, scope: 'document' | 'shadow') => {
+      const unreadableHrefs: string[] = []
 
-    for (const style of inlineStyles) {
-      parts.push(`/* inline style */\n${style}`)
+      for (const sheet of Array.from(root.styleSheets || [])) {
+        const readable = readSheet(sheet as CSSStyleSheet, scope)
+        if (!readable && sheet.href) unreadableHrefs.push(sheet.href)
+      }
+
+      if ('adoptedStyleSheets' in root) {
+        for (const sheet of Array.from((root as Document | ShadowRoot).adoptedStyleSheets || [])) {
+          readSheet(sheet as CSSStyleSheet, scope)
+        }
+      }
+
+      for (const href of unreadableHrefs) {
+        await fetchCrossOriginSheet(href, scope)
+      }
     }
 
-    return parts.join('\n\n')
-  })
+    await collectRootSheets(document, 'document')
 
-  return css
+    const shadowHosts = Array.from(document.querySelectorAll('*')).filter(el => Boolean((el as HTMLElement).shadowRoot))
+    for (const host of shadowHosts) {
+      const shadowRoot = (host as HTMLElement).shadowRoot
+      if (!shadowRoot) continue
+      await collectRootSheets(shadowRoot, 'shadow')
+    }
+
+    return chunks
+  })
+}
+
+export async function collectPageCSS(page: Page): Promise<string> {
+  const chunks = await collectCSSChunks(page)
+  return chunks.map(chunk => `/* ${chunk.scope}: ${chunk.sourceUrl} */\n${chunk.cssText}`).join('\n\n')
 }
 
 /**
@@ -132,4 +170,30 @@ export function fixCSSUrls(css: string, pageOrigin: string): string {
       return `url(${q}${resolved}${q})`
     }
   )
+}
+
+export function resolveCSSUrls(css: string, baseUrl: string): string {
+  const rewritePath = (rawPath: string) => {
+    const trimmed = rawPath.trim()
+    if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('http') || trimmed.startsWith('//') || trimmed.startsWith('#')) {
+      return trimmed
+    }
+    try {
+      return new URL(trimmed, baseUrl).href
+    } catch {
+      return trimmed
+    }
+  }
+
+  let next = css.replace(
+    /url\(\s*(['"]?)([^)'"]+)\1\s*\)/gi,
+    (_match, q, rawPath) => `url(${q}${rewritePath(rawPath)}${q})`
+  )
+
+  next = next.replace(
+    /@import\s+(?:url\(\s*)?(['"])([^'"]+)\1(?:\s*\))?/gi,
+    (_match, q, rawPath) => `@import url(${q}${rewritePath(rawPath)}${q})`
+  )
+
+  return next
 }

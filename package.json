@@ -6,13 +6,14 @@
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:all": "concurrently \"npm run dev:server\" \"npm run dev:worker\" \"npm run dev:client\"",
-    "dev:client": "vite",
-    "dev:server": "tsx watch server/index.ts",
+    "dev:client": "PARTCOPY_API_PORT=${PARTCOPY_API_PORT:-3002} vite --host 127.0.0.1 --port ${PARTCOPY_CLIENT_PORT:-5180}",
+    "dev:server": "PARTCOPY_API_PORT=${PARTCOPY_API_PORT:-3002} tsx watch server/index.ts",
     "dev:worker": "tsx watch server/worker.ts",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",
     "db:migrate": "supabase migration up",
+    "backfill:dom": "tsx scripts/backfill-dom-snapshots.ts",
     "build": "tsc -b && vite build"
   },
   "dependencies": {

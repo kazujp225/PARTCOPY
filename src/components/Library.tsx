@@ -1,14 +1,28 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { SourceSection, GenreInfo, BlockFamilyInfo } from '../types'
 import { SourcePreviewFrame } from './SourcePreviewFrame'
 
 const FAMILY_COLORS: Record<string, string> = {
-  navigation: '#6366f1', hero: '#3b82f6', feature: '#10b981', social_proof: '#ec4899',
-  stats: '#84cc16', pricing: '#8b5cf6', faq: '#14b8a6', content: '#64748b',
-  cta: '#f59e0b', contact: '#f97316', recruit: '#06b6d4', footer: '#6b7280',
-  news_list: '#a855f7', timeline: '#0ea5e9', company_profile: '#059669',
-  gallery: '#06b6d4', logo_cloud: '#a855f7'
+  navigation: '#6366f1',
+  hero: '#3b82f6',
+  feature: '#10b981',
+  social_proof: '#ec4899',
+  stats: '#84cc16',
+  pricing: '#8b5cf6',
+  faq: '#14b8a6',
+  content: '#64748b',
+  cta: '#f59e0b',
+  contact: '#f97316',
+  recruit: '#06b6d4',
+  footer: '#6b7280',
+  news_list: '#a855f7',
+  timeline: '#0ea5e9',
+  company_profile: '#059669',
+  gallery: '#06b6d4',
+  logo_cloud: '#a855f7'
 }
+
+type SortOption = 'newest' | 'confidence' | 'family' | 'source'
 
 interface Props {
   onAddToCanvas: (section: SourceSection) => void
@@ -22,52 +36,132 @@ export function Library({ onAddToCanvas }: Props) {
   const [sections, setSections] = useState<SourceSection[]>([])
   const [loading, setLoading] = useState(false)
   const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [sortBy, setSortBy] = useState<SortOption>('newest')
+  const [limit, setLimit] = useState(60)
+  const [onlyCta, setOnlyCta] = useState(false)
+  const [onlyForm, setOnlyForm] = useState(false)
+  const [onlyImages, setOnlyImages] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const familyLabelMap = families.reduce<Record<string, string>>((acc, family) => {
+    acc[family.key] = family.label_ja || family.label || family.key
+    return acc
+  }, {})
 
   const fetchMeta = useCallback(async () => {
-    const [gRes, fRes] = await Promise.all([
-      fetch('/api/library/genres'),
-      fetch('/api/library/families')
-    ])
-    const gData = await gRes.json()
-    const fData = await fRes.json()
-    setGenres(gData.genres || [])
-    setFamilies(fData.families || [])
+    try {
+      const [genreResponse, familyResponse] = await Promise.all([
+        fetch('/api/library/genres'),
+        fetch('/api/library/families')
+      ])
+
+      if (!genreResponse.ok || !familyResponse.ok) {
+        throw new Error('ライブラリの集計情報を取得できませんでした')
+      }
+
+      const genreData = await genreResponse.json()
+      const familyData = await familyResponse.json()
+      setGenres(genreData.genres || [])
+      setFamilies(familyData.families || [])
+    } catch (fetchError: any) {
+      setError(fetchError.message || 'ライブラリの集計情報を取得できませんでした')
+    }
   }, [])
 
   const fetchSections = useCallback(async () => {
     setLoading(true)
-    const params = new URLSearchParams()
-    if (selectedGenre) params.set('genre', selectedGenre)
-    if (selectedFamily) params.set('family', selectedFamily)
-    const res = await fetch(`/api/library?${params}`)
-    const data = await res.json()
-    setSections(data.sections || [])
-    setLoading(false)
-  }, [selectedGenre, selectedFamily])
+    setError(null)
 
-  useEffect(() => { fetchMeta() }, [fetchMeta])
-  useEffect(() => { fetchSections() }, [fetchSections])
+    try {
+      const params = new URLSearchParams()
+      params.set('limit', String(limit))
+      params.set('sort', sortBy)
+      if (selectedGenre) params.set('genre', selectedGenre)
+      if (selectedFamily) params.set('family', selectedFamily)
+      if (query.trim()) params.set('q', query.trim())
+      if (onlyCta) params.set('hasCta', 'true')
+      if (onlyForm) params.set('hasForm', 'true')
+      if (onlyImages) params.set('hasImages', 'true')
+
+      const response = await fetch(`/api/library?${params.toString()}`)
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.error || 'ライブラリの取得に失敗しました')
+      }
+
+      const data = await response.json()
+      setSections(data.sections || [])
+    } catch (fetchError: any) {
+      setSections([])
+      setError(fetchError.message || 'ライブラリの取得に失敗しました')
+    } finally {
+      setLoading(false)
+    }
+  }, [limit, onlyCta, onlyForm, onlyImages, query, selectedFamily, selectedGenre, sortBy])
+
+  useEffect(() => {
+    fetchMeta()
+  }, [fetchMeta])
+
+  useEffect(() => {
+    fetchSections()
+  }, [fetchSections])
 
   const handleDelete = async (id: string) => {
-    await fetch(`/api/library/${id}`, { method: 'DELETE' })
-    setSections(prev => prev.filter(s => s.id !== id))
-    fetchMeta()
+    setError(null)
+
+    try {
+      const response = await fetch(`/api/library/${id}`, { method: 'DELETE' })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.error || '削除に失敗しました')
+      }
+
+      setSections(prev => prev.filter(section => section.id !== id))
+      fetchMeta()
+    } catch (deleteError: any) {
+      setError(deleteError.message || '削除に失敗しました')
+    }
   }
+
+  const resetControls = () => {
+    setSelectedGenre(null)
+    setSelectedFamily(null)
+    setQuery('')
+    setSortBy('newest')
+    setLimit(60)
+    setOnlyCta(false)
+    setOnlyForm(false)
+    setOnlyImages(false)
+  }
+
+  const totalGenreCount = genres.reduce((sum, genre) => sum + genre.count, 0)
+  const hasActiveFilters = Boolean(
+    selectedGenre ||
+    selectedFamily ||
+    query.trim() ||
+    onlyCta ||
+    onlyForm ||
+    onlyImages ||
+    sortBy !== 'newest' ||
+    limit !== 60
+  )
 
   return (
     <div className="library">
       <div className="library-sidebar">
         <h3 className="library-sidebar-title">Genres</h3>
         <button className={`library-genre-btn ${!selectedGenre ? 'active' : ''}`} onClick={() => setSelectedGenre(null)}>
-          All
+          All ({totalGenreCount})
         </button>
-        {genres.map(g => (
+        {genres.map(genre => (
           <button
-            key={g.genre}
-            className={`library-genre-btn ${selectedGenre === g.genre ? 'active' : ''}`}
-            onClick={() => setSelectedGenre(g.genre)}
+            key={genre.genre}
+            className={`library-genre-btn ${selectedGenre === genre.genre ? 'active' : ''}`}
+            onClick={() => setSelectedGenre(genre.genre)}
           >
-            {g.genre || 'untagged'} ({g.count})
+            {genre.genre || 'untagged'} ({genre.count})
           </button>
         ))}
 
@@ -75,56 +169,119 @@ export function Library({ onAddToCanvas }: Props) {
         <button className={`library-genre-btn ${!selectedFamily ? 'active' : ''}`} onClick={() => setSelectedFamily(null)}>
           All families
         </button>
-        {families.map(f => (
+        {families.map(family => (
           <button
-            key={f.key}
-            className={`library-genre-btn ${selectedFamily === f.key ? 'active' : ''}`}
-            onClick={() => setSelectedFamily(f.key)}
+            key={family.key}
+            className={`library-genre-btn ${selectedFamily === family.key ? 'active' : ''}`}
+            onClick={() => setSelectedFamily(family.key)}
           >
-            <span className="filter-dot" style={{ background: FAMILY_COLORS[f.key] || '#94a3b8' }} />
-            {f.label_ja}
+            <span className="filter-dot" style={{ background: FAMILY_COLORS[family.key] || '#94a3b8' }} />
+            {family.label_ja} {typeof family.count === 'number' ? `(${family.count})` : ''}
           </button>
         ))}
       </div>
 
-      <div className="library-grid">
-        {loading && <div className="library-loading">Loading...</div>}
-        {!loading && sections.length === 0 && (
-          <div className="library-empty">
-            <p>保存されたパーツがありません</p>
-            <p className="library-empty-hint">URLを抽出するとライブラリに自動保存されます</p>
+      <div className="library-main">
+        <div className="library-toolbar">
+          <div className="library-toolbar-row">
+            <input
+              type="search"
+              className="parts-search-input"
+              value={query}
+              onChange={event => setQuery(event.target.value)}
+              placeholder="検索: domain / genre / tag / summary"
+            />
+            <select
+              className="parts-select"
+              value={sortBy}
+              onChange={event => setSortBy(event.target.value as SortOption)}
+            >
+              <option value="newest">新着順</option>
+              <option value="confidence">信頼度順</option>
+              <option value="family">family順</option>
+              <option value="source">source順</option>
+            </select>
+            <select
+              className="parts-select"
+              value={String(limit)}
+              onChange={event => setLimit(Number(event.target.value))}
+            >
+              <option value="24">24件</option>
+              <option value="60">60件</option>
+              <option value="120">120件</option>
+            </select>
           </div>
-        )}
-        {sections.map(sec => (
-          <div
-            key={sec.id}
-            className="library-card"
-            onMouseEnter={() => setHoveredId(sec.id)}
-            onMouseLeave={() => setHoveredId(null)}
-          >
-            <div className="library-card-thumb">
-              <SourcePreviewFrame htmlUrl={sec.htmlUrl} maxHeight={260} scale={0.5} />
-              <div className="part-overlay-top">
-                <span className="part-type-badge" style={{ background: FAMILY_COLORS[sec.block_family] || '#94a3b8' }}>
-                  {sec.block_family}
-                </span>
-              </div>
-              {hoveredId === sec.id && (
-                <div className="part-overlay-actions">
-                  <button className="add-btn-large" onClick={() => onAddToCanvas(sec)}>+ Canvas</button>
-                  <button className="remove-btn-small" onClick={() => handleDelete(sec.id)}>削除</button>
+
+          <div className="parts-toggle-row library-toggle-row">
+            <button className={`feature-toggle ${onlyImages ? 'active' : ''}`} onClick={() => setOnlyImages(prev => !prev)}>
+              IMG
+            </button>
+            <button className={`feature-toggle ${onlyCta ? 'active' : ''}`} onClick={() => setOnlyCta(prev => !prev)}>
+              CTA
+            </button>
+            <button className={`feature-toggle ${onlyForm ? 'active' : ''}`} onClick={() => setOnlyForm(prev => !prev)}>
+              FORM
+            </button>
+            <span className="parts-results-count">{sections.length}件表示</span>
+            {hasActiveFilters && (
+              <button className="inline-reset-btn" onClick={resetControls}>
+                条件をリセット
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="library-grid">
+          {loading && <div className="library-loading">Loading...</div>}
+          {!loading && error && (
+            <div className="library-empty">
+              <p>{error}</p>
+            </div>
+          )}
+          {!loading && !error && sections.length === 0 && (
+            <div className="library-empty">
+              <p>条件に一致するパーツがありません</p>
+              <p className="library-empty-hint">フィルターを戻すか、新しい URL を抽出してください</p>
+            </div>
+          )}
+          {!loading && !error && sections.map(section => (
+            <div
+              key={section.id}
+              className="library-card"
+              onMouseEnter={() => setHoveredId(section.id)}
+              onMouseLeave={() => setHoveredId(null)}
+            >
+              <div className="library-card-thumb">
+                <SourcePreviewFrame htmlUrl={section.htmlUrl} maxHeight={260} scale={0.5} />
+                <div className="part-overlay-top">
+                  <span className="part-type-badge" style={{ background: FAMILY_COLORS[section.block_family] || '#94a3b8' }}>
+                    {familyLabelMap[section.block_family] || section.block_family}
+                  </span>
                 </div>
-              )}
-            </div>
-            <div className="library-card-info">
-              <div className="library-card-genre">
-                {sec.source_sites?.genre && <span className="genre-badge">{sec.source_sites.genre}</span>}
-                {sec.source_sites?.tags?.map(t => <span key={t} className="tag-badge">{t}</span>)}
+                {hoveredId === section.id && (
+                  <div className="part-overlay-actions">
+                    <button className="add-btn-large" onClick={() => onAddToCanvas(section)}>+ Canvas</button>
+                    <button className="remove-btn-small" onClick={() => handleDelete(section.id)}>削除</button>
+                  </div>
+                )}
               </div>
-              <div className="part-source">{sec.source_sites?.normalized_domain || ''}</div>
+              <div className="part-content library-card-content">
+                {section.block_variant && <div className="part-variant">{section.block_variant}</div>}
+                {section.text_summary && <p className="part-summary">{section.text_summary}</p>}
+                <div className="library-card-info">
+                  <div className="library-card-genre">
+                    {section.source_sites?.genre && <span className="genre-badge">{section.source_sites.genre}</span>}
+                    {section.source_sites?.tags?.map(tag => <span key={tag} className="tag-badge">{tag}</span>)}
+                    {section.features_jsonb?.hasImages && <span className="meta-tag">IMG</span>}
+                    {section.features_jsonb?.hasCTA && <span className="meta-tag cta">CTA</span>}
+                    {section.features_jsonb?.hasForm && <span className="meta-tag form">FORM</span>}
+                  </div>
+                  <div className="part-source">{section.source_sites?.normalized_domain || ''}</div>
+                </div>
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </div>
   )

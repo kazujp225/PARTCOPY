@@ -2,5 +2,6 @@ node_modules
 dist
 .vite
 data/
+.partcopy/
 .env
 .env.local

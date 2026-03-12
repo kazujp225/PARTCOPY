@@ -9,6 +9,7 @@ export interface DetectedSection {
   index: number
   tagName: string
   outerHTML: string
+  previewHTML: string
   textContent: string
   domPath: string
   boundingBox: { x: number; y: number; width: number; height: number }
@@ -51,13 +52,119 @@ export async function detectSections(page: Page): Promise<DetectedSection[]> {
     const MIN_HEIGHT = 40
     const MIN_WIDTH = 200
     const MAX_SECTION_HEIGHT_RATIO = 1.5 // sections taller than 1.5x viewport get unwrapped
+    const IGNORE_TAGS = new Set(['script', 'style', 'link', 'meta', 'noscript', 'br', 'hr', 'svg'])
+    const HARD_SECTION_TAGS = new Set(['nav', 'header', 'footer'])
+    const SECTIONISH_TAGS = new Set(['header', 'nav', 'main', 'section', 'article', 'aside', 'footer'])
+    const MICRO_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'strong', 'em', 'small', 'label', 'li', 'dt', 'dd'])
+    const SECTION_HINT_RE = /\b(hero|feature|service|section|block|band|panel|faq|accordion|cta|contact|form|pricing|plan|footer|header|nav|menu|news|blog|voice|testimonial|company|about|gallery|works|flow|step|mv|fv|kv)\b/i
+
+    const visibleChildren = (el: Element) => Array.from(el.children).filter(child => {
+      const tag = child.tagName.toLowerCase()
+      if (IGNORE_TAGS.has(tag)) return false
+      const rect = child.getBoundingClientRect()
+      return rect.height >= MIN_HEIGHT && rect.width >= MIN_WIDTH
+    })
+
+    const getClassSignature = (el: Element) => {
+      const tag = el.tagName.toLowerCase()
+      const classes = Array.from(el.classList).slice(0, 3).sort().join('.')
+      return classes ? `${tag}.${classes}` : tag
+    }
+
+    const getSiblingSignatureCount = (el: Element) => {
+      const parent = el.parentElement
+      if (!parent) return 1
+      const signature = getClassSignature(el)
+      return Array.from(parent.children).filter(child => getClassSignature(child) === signature).length
+    }
+
+    const getSignals = (el: Element) => {
+      const rect = el.getBoundingClientRect()
+      const tag = el.tagName.toLowerCase()
+      const textContent = (el.textContent || '').trim()
+      const childCount = el.children.length
+      const headingCount = el.querySelectorAll(':scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > h6').length
+      const imageCount = el.querySelectorAll(':scope img, :scope picture, :scope [style*="background-image"]').length
+      const formCount = el.querySelectorAll(':scope form, :scope input, :scope textarea, :scope select').length
+      const buttonCount = el.querySelectorAll(':scope button, :scope a[href], :scope input[type="submit"], :scope .btn, :scope [class*="button"], :scope [class*="btn"]').length
+      const listItemCount = el.querySelectorAll(':scope li').length
+      const tokens = `${el.id || ''} ${Array.from(el.classList).join(' ')}`
+      const repeatedChildren = visibleChildren(el)
+      const childSignatureCounts = repeatedChildren.reduce<Record<string, number>>((acc, child) => {
+        const signature = getClassSignature(child)
+        acc[signature] = (acc[signature] || 0) + 1
+        return acc
+      }, {})
+      const maxRepeatedChildren = Object.values(childSignatureCounts).sort((a, b) => b - a)[0] || 0
+
+      return {
+        rect,
+        tag,
+        textLength: textContent.length,
+        childCount,
+        headingCount,
+        imageCount,
+        formCount,
+        buttonCount,
+        listItemCount,
+        hasBoundaryHint: SECTION_HINT_RE.test(tokens) || SECTIONISH_TAGS.has(tag),
+        repeatedChildCluster: maxRepeatedChildren >= 3,
+        siblingPatternCount: getSiblingSignatureCount(el)
+      }
+    }
+
+    const computeSectionScore = (el: Element) => {
+      const signal = getSignals(el)
+      let score = 0
+      if (HARD_SECTION_TAGS.has(signal.tag)) score += 6
+      if (SECTIONISH_TAGS.has(signal.tag)) score += 3
+      if (signal.hasBoundaryHint) score += 2
+      if (signal.headingCount > 0) score += 2
+      if (signal.formCount > 0) score += 2
+      if (signal.imageCount > 0) score += 1
+      if (signal.buttonCount > 0) score += 1
+      if (signal.listItemCount >= 3) score += 1
+      if (signal.repeatedChildCluster) score += 2
+      if (signal.rect.height >= 160) score += 1
+      if (signal.textLength >= 120) score += 1
+      if (MICRO_TAGS.has(signal.tag)) score -= 4
+      if (signal.rect.height < 80) score -= 3
+      if (signal.childCount <= 1 && signal.textLength < 180 && !signal.hasBoundaryHint) score -= 2
+      if (signal.siblingPatternCount >= 3 && signal.rect.height < 160 && !signal.hasBoundaryHint) score -= 3
+      return score
+    }
+
+    const isPotentialSectionElement = (el: Element) => {
+      const signal = getSignals(el)
+
+      if (signal.rect.height < MIN_HEIGHT || signal.rect.width < MIN_WIDTH) return false
+      if (HARD_SECTION_TAGS.has(signal.tag)) return true
+      if (MICRO_TAGS.has(signal.tag)) return false
+      if (signal.siblingPatternCount >= 4 && signal.rect.height < 140 && signal.headingCount <= 1 && signal.formCount === 0) return false
+      if (signal.childCount === 0 && signal.textLength < 320) return false
+      if (signal.childCount <= 1 && signal.textLength < 180 && !signal.hasBoundaryHint && signal.imageCount === 0 && signal.formCount === 0) return false
+
+      return computeSectionScore(el) >= 2
+    }
+
+    const getDominantChild = (el: Element) => {
+      const rect = el.getBoundingClientRect()
+      const children = visibleChildren(el)
+      if (children.length === 0) return null
+
+      const dominant = children.filter(child => {
+        const childRect = child.getBoundingClientRect()
+        return childRect.height >= rect.height * 0.6 && childRect.width >= rect.width * 0.7
+      })
+
+      return dominant.length === 1 ? dominant[0] : null
+    }
 
     // ---- Step 1: Collect semantic candidates ----
-    const semanticTags = new Set(['header', 'nav', 'main', 'section', 'article', 'aside', 'footer'])
     const allSemantic = new Set<Element>()
     document.querySelectorAll('header, nav, main, section, article, aside, footer').forEach(el => {
       const rect = el.getBoundingClientRect()
-      if (rect.height >= MIN_HEIGHT && rect.width >= MIN_WIDTH) allSemantic.add(el)
+      if (rect.height >= MIN_HEIGHT && rect.width >= MIN_WIDTH && isPotentialSectionElement(el)) allSemantic.add(el)
     })
 
     // ---- Step 2: Recursive unwrapper ----
@@ -70,9 +177,31 @@ export async function detectSections(page: Page): Promise<DetectedSection[]> {
       if (rect.height < MIN_HEIGHT || rect.width < MIN_WIDTH) return
 
       const tag = el.tagName.toLowerCase()
+      if (!isPotentialSectionElement(el) && !HARD_SECTION_TAGS.has(tag)) return
 
       // Always keep nav, header, footer as-is
-      if (['nav', 'header', 'footer'].includes(tag)) {
+      if (HARD_SECTION_TAGS.has(tag)) {
+        finalSections.push(el)
+        return
+      }
+
+      const signal = getSignals(el)
+
+      // Generic wrappers should unwrap into their dominant child instead of becoming a section.
+      const dominantChild = getDominantChild(el)
+      if (
+        dominantChild &&
+        depth < 5 &&
+        !signal.hasBoundaryHint &&
+        !HARD_SECTION_TAGS.has(tag) &&
+        signal.childCount <= 2
+      ) {
+        tryAdd(dominantChild, depth + 1)
+        return
+      }
+
+      // Keep repeated UI clusters as one section instead of splitting each item.
+      if (signal.repeatedChildCluster && rect.height <= vh * 2.5 && (signal.headingCount > 0 || signal.childCount >= 3)) {
         finalSections.push(el)
         return
       }
@@ -84,14 +213,15 @@ export async function detectSections(page: Page): Promise<DetectedSection[]> {
       }
 
       // Element is too tall - try to unwrap into children
-      const validChildren = Array.from(el.children).filter(c => {
-        const ct = c.tagName.toLowerCase()
-        if (['script', 'style', 'link', 'meta', 'noscript', 'br', 'hr'].includes(ct)) return false
-        const cr = c.getBoundingClientRect()
-        return cr.height >= MIN_HEIGHT && cr.width >= MIN_WIDTH
-      })
+      const validChildren = visibleChildren(el).filter(isPotentialSectionElement)
 
       if (validChildren.length >= 2 && depth < 4) {
+        const avgHeight = validChildren.reduce((sum, child) => sum + child.getBoundingClientRect().height, 0) / validChildren.length
+        if (avgHeight < 140 && signal.childCount >= 4) {
+          finalSections.push(el)
+          return
+        }
+
         // Unwrap: recurse into children
         for (const child of validChildren) {
           tryAdd(child, depth + 1)
@@ -121,10 +251,10 @@ export async function detectSections(page: Page): Promise<DetectedSection[]> {
     // Then process body direct children that aren't already covered
     for (const child of Array.from(document.body.children)) {
       const tag = child.tagName.toLowerCase()
-      if (['script', 'style', 'link', 'meta', 'noscript', 'br', 'hr', 'svg'].includes(tag)) continue
+      if (IGNORE_TAGS.has(tag)) continue
 
-      // Skip if already in finalSections or contained by something in finalSections
-      const alreadyCovered = finalSections.some(s => s === child || s.contains(child) || child.contains(s))
+      // Skip only when an existing selection already covers this node.
+      const alreadyCovered = finalSections.some(s => s === child || s.contains(child))
       if (alreadyCovered) continue
 
       tryAdd(child, 0)
@@ -134,7 +264,7 @@ export async function detectSections(page: Page): Promise<DetectedSection[]> {
     const mainEl = document.querySelector('main')
     if (mainEl) {
       for (const child of Array.from(mainEl.children)) {
-        const alreadyCovered = finalSections.some(s => s === child || s.contains(child) || child.contains(s))
+        const alreadyCovered = finalSections.some(s => s === child || s.contains(child))
         if (alreadyCovered) continue
         tryAdd(child, 0)
       }
@@ -145,8 +275,12 @@ export async function detectSections(page: Page): Promise<DetectedSection[]> {
     const seen = new Set<Element>()
     for (const el of finalSections) {
       if (seen.has(el)) continue
-      // Remove if fully contained by another section
-      const containedByOther = finalSections.some(o => o !== el && o.contains(el))
+      // Remove if fully contained by another stronger section
+      const containedByOther = finalSections.some(o => (
+        o !== el &&
+        o.contains(el) &&
+        computeSectionScore(o) >= computeSectionScore(el)
+      ))
       if (containedByOther) continue
       seen.add(el)
       uniqueSections.push(el)
@@ -196,6 +330,107 @@ export async function detectSections(page: Page): Promise<DetectedSection[]> {
       return null
     }
 
+    const copyAttrs = (from: Element, to: Element) => {
+      for (const attr of Array.from(from.attributes)) {
+        const name = attr.name.toLowerCase()
+        const value = attr.value
+        if (name.startsWith('on')) continue
+        if ((name === 'href' || name === 'src') && value.trim().toLowerCase().startsWith('javascript:')) continue
+        to.setAttribute(attr.name, attr.value)
+      }
+    }
+
+    const createShallowClone = (el: Element, doc: Document): Element => {
+      const clone = doc.createElement(el.tagName)
+      copyAttrs(el, clone)
+      return clone
+    }
+
+    const createPlaceholderClone = (el: Element, doc: Document): Element => {
+      const clone = createShallowClone(el, doc)
+      const styleAttr = clone.getAttribute('style')
+      const hiddenStyle = `${styleAttr ? `${styleAttr};` : ''}display:none !important;`
+      clone.setAttribute('style', hiddenStyle)
+      clone.setAttribute('aria-hidden', 'true')
+      clone.setAttribute('data-pc-placeholder', 'true')
+      return clone
+    }
+
+    const buildInlineStyle = (el: Element) => {
+      const cs = window.getComputedStyle(el)
+      const parts: string[] = []
+      for (let i = 0; i < cs.length; i++) {
+        const prop = cs[i]
+        const value = cs.getPropertyValue(prop)
+        if (!value) continue
+        parts.push(`${prop}:${value};`)
+      }
+      return parts.join('')
+    }
+
+    const cloneResolvedTree = (el: Element, doc: Document): Element => {
+      const clone = doc.createElement(el.tagName)
+      copyAttrs(el, clone)
+
+      const styleText = buildInlineStyle(el)
+      if (styleText) clone.setAttribute('style', styleText)
+
+      for (const child of Array.from(el.childNodes)) {
+        if (child.nodeType === Node.TEXT_NODE) {
+          clone.appendChild(doc.createTextNode(child.textContent || ''))
+          continue
+        }
+        if (child.nodeType !== Node.ELEMENT_NODE) continue
+        const tag = (child as Element).tagName.toLowerCase()
+        if (['script', 'noscript', 'iframe', 'object', 'embed', 'applet'].includes(tag)) continue
+        clone.appendChild(cloneResolvedTree(child as Element, doc))
+      }
+
+      return clone
+    }
+
+    const buildPreviewHTML = (target: Element): string => {
+      const previewDoc = document.implementation.createHTMLDocument(document.title || '')
+      previewDoc.head.innerHTML = ''
+      previewDoc.body.innerHTML = ''
+      copyAttrs(document.documentElement, previewDoc.documentElement)
+      copyAttrs(document.body, previewDoc.body)
+
+      const chain: Element[] = []
+      let current: Element | null = target
+      while (current && current !== document.body) {
+        chain.unshift(current)
+        current = current.parentElement
+      }
+
+      let previewParent: Element = previewDoc.body
+      let originalParent: Element = document.body
+
+      for (let depth = 0; depth < chain.length; depth++) {
+        const pathNode = chain[depth]
+        const siblings = Array.from(originalParent.children).filter(child => {
+          const tag = child.tagName.toLowerCase()
+          return !['script', 'noscript'].includes(tag)
+        })
+
+        for (const sibling of siblings) {
+          if (sibling === pathNode) {
+            const clone = depth === chain.length - 1
+              ? cloneResolvedTree(pathNode, previewDoc)
+              : createShallowClone(pathNode, previewDoc)
+            previewParent.appendChild(clone)
+            previewParent = clone
+          } else {
+            previewParent.appendChild(createPlaceholderClone(sibling, previewDoc))
+          }
+        }
+
+        originalParent = pathNode
+      }
+
+      return `<!DOCTYPE html>\n${previewDoc.documentElement.outerHTML}`
+    }
+
     // ---- Step 5: Extract features ----
     return uniqueSections.map((el, index) => {
       const rect = el.getBoundingClientRect()
@@ -225,6 +460,7 @@ export async function detectSections(page: Page): Promise<DetectedSection[]> {
         index,
         tagName: el.tagName,
         outerHTML: el.outerHTML,
+        previewHTML: buildPreviewHTML(el),
         textContent: (el.textContent || '').slice(0, 3000),
         domPath: getDomPath(el),
         boundingBox: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },

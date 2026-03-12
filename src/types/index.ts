@@ -64,7 +64,7 @@ export interface SourceSection {
   raw_html_storage_path?: string
   sanitized_html_storage_path?: string
   source_pages?: { url: string; title: string }
-  source_sites?: { normalized_domain: string; genre: string; tags: string[] }
+  source_sites?: { normalized_domain: string; genre: string; tags: string[]; industry?: string }
   created_at: string
 }
 
@@ -85,6 +85,7 @@ export interface BlockFamilyInfo {
   label: string
   label_ja: string
   sort_order: number
+  count?: number
 }
 
 // ============================================================

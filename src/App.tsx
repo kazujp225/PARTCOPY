@@ -17,6 +17,12 @@ export default function App() {
   const [jobStatus, setJobStatus] = useState<string | null>(null)
   const [view, setView] = useState<View>('editor')
   const pollRef = useRef<NodeJS.Timeout | null>(null)
+  const familyCount = new Set(sections.map(section => section.block_family)).size
+  const sourceCount = new Set(
+    sections
+      .map(section => section.source_sites?.normalized_domain)
+      .filter((domain): domain is string => Boolean(domain))
+  ).size
 
   const stopPolling = () => {
     if (pollRef.current) {
@@ -40,7 +46,16 @@ export default function App() {
           // Fetch sections
           const secRes = await fetch(`/api/jobs/${jobId}/sections`)
           const { sections: secs } = await secRes.json()
-          setSections(prev => [...prev, ...secs])
+          setSections(prev => {
+            const seen = new Set(prev.map(section => section.id))
+            const next = [...prev]
+            for (const section of secs) {
+              if (seen.has(section.id)) continue
+              seen.add(section.id)
+              next.push(section)
+            }
+            return next
+          })
           setLoading(false)
           setJobStatus(null)
         } else if (job.status === 'failed') {
@@ -135,6 +150,25 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      <div className="workspace-summary">
+        <div className="workspace-stat">
+          <span className="workspace-stat-label">抽出パーツ</span>
+          <strong>{sections.length}</strong>
+        </div>
+        <div className="workspace-stat">
+          <span className="workspace-stat-label">ファミリー</span>
+          <strong>{familyCount}</strong>
+        </div>
+        <div className="workspace-stat">
+          <span className="workspace-stat-label">Canvas</span>
+          <strong>{canvas.length}</strong>
+        </div>
+        <div className="workspace-stat">
+          <span className="workspace-stat-label">参照サイト</span>
+          <strong>{sourceCount}</strong>
+        </div>
+      </div>
 
       {view !== 'library' && (
         <URLInput onSubmit={handleExtract} loading={loading} error={error} jobStatus={jobStatus} />
