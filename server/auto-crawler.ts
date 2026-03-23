@@ -108,10 +108,10 @@ async function submitAndWait(url: string): Promise<boolean> {
     const { jobId } = await res.json() as { jobId: string }
     logger.info('Auto-crawl: job created', { url, jobId })
 
-    // Poll for job completion (max 5 minutes)
-    const deadline = Date.now() + 5 * 60 * 1000
+    // Poll for job completion (max 3 minutes)
+    const deadline = Date.now() + 3 * 60 * 1000
     while (Date.now() < deadline && !stopped) {
-      await new Promise(r => setTimeout(r, 5000))
+      await new Promise(r => setTimeout(r, 2000))
 
       try {
         const statusRes = await fetch(`${API_BASE}/api/jobs/${jobId}`)
