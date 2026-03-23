@@ -85,8 +85,10 @@ export default function App() {
         .catch(() => {})
     })
   }, [])
-  // Poll crawl queue status
+  // Poll crawl queue status (only when the auto-crawl section is expanded)
   useEffect(() => {
+    if (!crawlExpanded) return
+
     const fetchCrawlStatus = async () => {
       try {
         const res = await fetch('/api/crawl-queue')
@@ -97,12 +99,14 @@ export default function App() {
           setCrawlActive(data.active || false)
           setCrawlCurrentUrl(data.currentUrl || null)
         }
-      } catch {}
+      } catch {
+        // Server likely down, ignore silently
+      }
     }
     fetchCrawlStatus()
     const interval = setInterval(fetchCrawlStatus, 10_000)
     return () => clearInterval(interval)
-  }, [])
+  }, [crawlExpanded])
 
   const handleCrawlSubmit = useCallback(async () => {
     const urls = crawlUrls

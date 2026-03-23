@@ -884,6 +884,21 @@ app.get('/api/sections/:sectionId/render', async (req, res) => {
         cssContent = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.page.css_bundle_path)
       }
     }
+    // Rewrite relative font/image URLs in CSS to absolute /assets/ paths
+    if (cssContent && record.page.css_bundle_path) {
+      const assetBase = '/assets/' + record.page.css_bundle_path.replace(/\/[^/]+$/, '/')
+      cssContent = cssContent.replace(
+        /url\(\s*(['"]?)((?:(?!\1\)).)*?)\1\s*\)/gi,
+        (match, q, rawPath) => {
+          const trimmed = rawPath.trim()
+          // Skip data URIs, absolute URLs, already-prefixed paths
+          if (!trimmed || /^(data:|https?:\/\/|\/\/|\/assets\/)/i.test(trimmed)) {
+            return match
+          }
+          return `url(${q}${assetBase}${trimmed}${q})`
+        }
+      )
+    }
     const cssStyle = cssContent ? `<style>${cssContent}</style>` : ''
 
     const html = buildRenderDocument(storedHtml, pageOrigin, { extraHead: cssStyle, skipBase: true })
@@ -1138,6 +1153,21 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
       if (!cssContent) {
         cssContent = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.page.css_bundle_path)
       }
+    }
+    // Rewrite relative font/image URLs in CSS to absolute /assets/ paths
+    if (cssContent && record.page.css_bundle_path) {
+      const assetBase = '/assets/' + record.page.css_bundle_path.replace(/\/[^/]+$/, '/')
+      cssContent = cssContent.replace(
+        /url\(\s*(['"]?)((?:(?!\1\)).)*?)\1\s*\)/gi,
+        (match, q, rawPath) => {
+          const trimmed = rawPath.trim()
+          // Skip data URIs, absolute URLs, already-prefixed paths
+          if (!trimmed || /^(data:|https?:\/\/|\/\/|\/assets\/)/i.test(trimmed)) {
+            return match
+          }
+          return `url(${q}${assetBase}${trimmed}${q})`
+        }
+      )
     }
     const cssStyle = cssContent ? `<style>${cssContent}</style>` : ''
 

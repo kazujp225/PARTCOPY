@@ -53,12 +53,17 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 /**
  * URLからバイナリデータを直接ダウンロード（curl相当）
  */
-async function downloadFile(url: string): Promise<{ data: Buffer; contentType: string } | null> {
+async function downloadFile(url: string, pageOrigin?: string): Promise<{ data: Buffer; contentType: string } | null> {
   try {
+    const headers: Record<string, string> = {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    }
+    if (pageOrigin) {
+      headers['Referer'] = pageOrigin + '/'
+      headers['Origin'] = pageOrigin
+    }
     const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-      },
+      headers,
       signal: AbortSignal.timeout(15000)
     })
     if (!res.ok) return null
@@ -280,7 +285,7 @@ export async function downloadSite(
 
   for (let i = 0; i < cssUrls.length; i++) {
     const cssUrl = cssUrls[i]
-    const file = await downloadFile(cssUrl)
+    const file = await downloadFile(cssUrl, pageOrigin)
     if (!file) { console.log(`  CSS skip (failed): ${cssUrl.slice(0, 80)}`); continue }
 
     const storagePath = urlToStoragePath(`${baseDir}/css`, cssUrl, i)
@@ -320,7 +325,7 @@ export async function downloadSite(
 
   for (const chunk of imageChunks) {
     const results = await Promise.allSettled(chunk.map(async (imgUrl, idx) => {
-      const file = await downloadFile(imgUrl)
+      const file = await downloadFile(imgUrl, pageOrigin)
       if (!file) return null
 
       const globalIdx = allImageUrls.indexOf(imgUrl)
@@ -341,7 +346,7 @@ export async function downloadSite(
   const fontFiles: DownloadedAsset[] = []
   for (let i = 0; i < allFontUrls.length; i++) {
     const fontUrl = allFontUrls[i]
-    const file = await downloadFile(fontUrl)
+    const file = await downloadFile(fontUrl, pageOrigin)
     if (!file) continue
 
     const storagePath = urlToStoragePath(`${baseDir}/font`, fontUrl, i)
@@ -356,14 +361,14 @@ export async function downloadSite(
 
   // Google Fonts CSS内のフォントも取得
   for (const fontCssUrl of fontCssUrls) {
-    const file = await downloadFile(fontCssUrl)
+    const file = await downloadFile(fontCssUrl, pageOrigin)
     if (!file) continue
     const fontCssText = file.data.toString('utf-8')
     const fontUrlsInCss = extractUrlsFromCSS(fontCssText, fontCssUrl)
     for (let i = 0; i < fontUrlsInCss.length; i++) {
       const fUrl = fontUrlsInCss[i]
       if (urlMap.has(fUrl)) continue
-      const fFile = await downloadFile(fUrl)
+      const fFile = await downloadFile(fUrl, pageOrigin)
       if (!fFile) continue
       const storagePath = urlToStoragePath(`${baseDir}/font`, fUrl, fontFiles.length + i)
       try {
