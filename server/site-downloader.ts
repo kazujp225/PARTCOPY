@@ -240,7 +240,7 @@ export async function downloadSite(
   // Random delay (1-3s) before navigation to appear more human-like
   await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000))
 
-  await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 })
+  await page.goto(url, { waitUntil: 'networkidle0', timeout: 45000 })
 
   // Lazy-load scroll (timeout 30s to avoid hanging on infinite-scroll pages)
   await withTimeout(
@@ -258,7 +258,19 @@ export async function downloadSite(
     30000,
     'lazy-scroll'
   )
-  await new Promise(r => setTimeout(r, 1000))
+  // フォントとアイコンの読み込みを待つ
+  await withTimeout(
+    page.evaluate(async () => {
+      // document.fonts.ready でフォント読み込み完了を待つ
+      if (document.fonts && document.fonts.ready) {
+        await document.fonts.ready
+      }
+      // 追加の安定化待ち
+      await new Promise(r => setTimeout(r, 2000))
+    }),
+    10000,
+    'font-load'
+  )
 
   const finalUrl = page.url()
   const pageOrigin = new URL(finalUrl).origin
