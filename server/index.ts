@@ -1688,6 +1688,55 @@ npm run build
 \`dist/\` フォルダに出力されます。
 `
 
+    // Generate CLAUDE.md (Claude Code用の指示書)
+    const claudeMd = `# CLAUDE.md
+
+このプロジェクトはPARTCOPYで生成されたReact + TypeScript + Tailwind CSSのWebサイトです。
+
+## 起動方法
+\`\`\`bash
+npm install
+npm run dev
+\`\`\`
+http://localhost:5173 でブラウザ確認できます。
+
+## 技術スタック
+- React 18 + TypeScript
+- Vite 6
+- Tailwind CSS 4（@tailwindcss/vite）
+- フォント: Noto Sans JP / Noto Serif JP（Google Fonts）
+
+## プロジェクト構造
+- \`src/App.tsx\` — メインコンポーネント。全セクションをここでimportして縦に並べている
+- \`src/components/\` — 各セクションのTSXコンポーネント
+- \`src/index.css\` — Tailwind設定 + カスタムカラー（z-black, z-blue, z-cyan, z-purple, z-red）
+- \`vite.config.ts\` — Vite + React + Tailwind設定
+
+## カスタムカラー
+- \`z-black\`: #1a1a1a
+- \`z-blue\`: #2563eb / \`z-blue-dark\`: #1e40af
+- \`z-cyan\`: #06b6d4
+- \`z-purple\`: #7c3aed
+- \`z-red\`: #ef4444
+
+## カスタムCSS
+- \`.stroke-text-blue\` — 青い縁取りテキスト
+- \`.stroke-text-gray\` — グレー縁取りテキスト
+- \`.animate-scanline\` — スキャンラインアニメーション
+
+## よくある作業
+- 「テキストを変えて」→ 各コンポーネント内の日本語テキストを編集
+- 「色を変えて」→ src/index.css の @theme 内のカラー変数を変更
+- 「セクションを並び替えて」→ src/App.tsx のコンポーネント順序を変更
+- 「セクションを削除して」→ src/App.tsx からimportとJSXを削除
+- 「ビルドして」→ npm run build → dist/ に出力
+- 「デプロイして」→ dist/ をVercel/Netlify等にアップロード
+
+## 注意
+- コンポーネント内の画像URLがSupabase署名URLの場合、期限切れの可能性あり
+- Tailwindのカスタムクラス（z-*）は src/index.css で定義済み
+`
+
     // Build ZIP
     res.setHeader('Content-Type', 'application/zip')
     res.setHeader('Content-Disposition', 'attachment; filename="partcopy-export.zip"')
@@ -1705,6 +1754,7 @@ npm run build
 
     archive.pipe(res)
 
+    archive.append(claudeMd, { name: 'CLAUDE.md' })
     archive.append(indexHtml, { name: 'index.html' })
     archive.append(pkgJson, { name: 'package.json' })
     archive.append(tsconfigJson, { name: 'tsconfig.json' })
