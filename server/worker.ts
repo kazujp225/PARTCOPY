@@ -35,6 +35,7 @@ import { classifySection, type RawSection } from './classifier.js'
 import { canonicalizeSection } from './canonicalizer.js'
 import { parseSectionDOM } from './dom-parser.js'
 import { logger } from './logger.js'
+import { startAutoCrawler } from './auto-crawler.js'
 
 const WORKER_ID = `worker-${process.pid}`
 const POLL_INTERVAL = 3000
@@ -614,7 +615,9 @@ async function processJob(job: any) {
       await failJob(job.id, 'PROCESSING_ERROR', `Failed after ${MAX_RETRIES} retries: ${err.message}`)
     }
   } finally {
-    await browser.close()
+    await browser.close().catch((closeErr: any) => {
+      logger.warn('Browser close failed (may already be closed)', { error: closeErr.message })
+    })
   }
 }
 
@@ -662,3 +665,11 @@ async function pollLoop() {
 }
 
 pollLoop()
+
+// Start auto-crawler if queue file exists
+import { existsSync } from 'fs'
+import path from 'path'
+const CRAWL_QUEUE_PATH = path.resolve(process.cwd(), '.partcopy/crawl-queue.txt')
+if (existsSync(CRAWL_QUEUE_PATH)) {
+  startAutoCrawler()
+}

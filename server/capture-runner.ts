@@ -3,7 +3,10 @@
  * Puppeteer page capture: goto, lazy-load, page.content(), screenshot
  */
 import type { Page, Browser } from 'puppeteer'
-import puppeteer from 'puppeteer'
+import puppeteer from 'puppeteer-extra'
+import StealthPlugin from 'puppeteer-extra-plugin-stealth'
+
+puppeteer.use(StealthPlugin())
 
 export interface CaptureResult {
   finalUrl: string
@@ -24,8 +27,11 @@ export async function launchBrowser(): Promise<Browser> {
 export async function capturePage(page: Page, url: string): Promise<CaptureResult> {
   await page.setViewport({ width: 1440, height: 900 })
   await page.setUserAgent(
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
   )
+
+  // Random delay (1-3s) before navigation to appear more human-like
+  await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000))
 
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 })
 

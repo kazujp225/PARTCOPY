@@ -35,6 +35,15 @@ export default function App() {
   const [tsxResult, setTsxResult] = useState<{ tsx: string; familyName?: string } | null>(null)
   const [exporting, setExporting] = useState(false)
 
+  // Auto-crawl state
+  const [crawlQueueCount, setCrawlQueueCount] = useState(0)
+  const [crawlDoneCount, setCrawlDoneCount] = useState(0)
+  const [crawlActive, setCrawlActive] = useState(false)
+  const [crawlCurrentUrl, setCrawlCurrentUrl] = useState<string | null>(null)
+  const [crawlUrls, setCrawlUrls] = useState('')
+  const [crawlExpanded, setCrawlExpanded] = useState(false)
+  const [crawlSubmitting, setCrawlSubmitting] = useState(false)
+
   // Persist canvas to localStorage (debounced to avoid excessive writes)
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -76,6 +85,59 @@ export default function App() {
         .catch(() => {})
     })
   }, [])
+  // Poll crawl queue status
+  useEffect(() => {
+    const fetchCrawlStatus = async () => {
+      try {
+        const res = await fetch('/api/crawl-queue')
+        if (res.ok) {
+          const data = await res.json()
+          setCrawlQueueCount(data.queue?.length || 0)
+          setCrawlDoneCount(data.done?.length || 0)
+          setCrawlActive(data.active || false)
+          setCrawlCurrentUrl(data.currentUrl || null)
+        }
+      } catch {}
+    }
+    fetchCrawlStatus()
+    const interval = setInterval(fetchCrawlStatus, 10_000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const handleCrawlSubmit = useCallback(async () => {
+    const urls = crawlUrls
+      .split('\n')
+      .map(u => u.trim())
+      .filter(u => u.length > 0)
+    if (urls.length === 0) return
+
+    setCrawlSubmitting(true)
+    try {
+      const res = await fetch('/api/crawl-queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setCrawlQueueCount(data.queue?.length || 0)
+        setCrawlDoneCount(data.done?.length || 0)
+        setCrawlActive(data.active || false)
+        setCrawlUrls('')
+      }
+    } catch {}
+    setCrawlSubmitting(false)
+  }, [crawlUrls])
+
+  const handleCrawlClear = useCallback(async () => {
+    try {
+      const res = await fetch('/api/crawl-queue', { method: 'DELETE' })
+      if (res.ok) {
+        setCrawlQueueCount(0)
+      }
+    } catch {}
+  }, [])
+
   const familyCount = new Set(sections.map(section => section.block_family)).size
   const sourceCount = new Set(
     sections
@@ -97,7 +159,9 @@ export default function App() {
     pollRef.current = setInterval(async () => {
       try {
         const res = await fetch(`/api/jobs/${jobId}`)
+        if (!res.ok) return // skip transient errors, will retry next interval
         const { job } = await res.json() as { job: CrawlJob }
+        if (!job) return
         const detail = job.status_detail || ''
         setJobStatus(`${job.status}${detail ? ` - ${detail}` : ''}${job.section_count ? ` (${job.section_count} sections)` : ''}`)
 
@@ -105,6 +169,7 @@ export default function App() {
           stopPolling()
           // Fetch sections
           const secRes = await fetch(`/api/jobs/${jobId}/sections`)
+          if (!secRes.ok) { setLoading(false); setJobStatus(null); return }
           const secData = await secRes.json()
           const secs = secData.sections || []
           setSections(prev => {
@@ -142,8 +207,12 @@ export default function App() {
         body: JSON.stringify({ url, genre, tags })
       })
       if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || 'Failed to create job')
+        let message = 'Failed to create job'
+        try {
+          const data = await res.json()
+          message = data.error || message
+        } catch {}
+        throw new Error(message)
       }
       const { jobId } = await res.json()
       setJobStatus('queued - waiting for worker...')
@@ -200,8 +269,12 @@ export default function App() {
     try {
       const res = await fetch(`/api/sections/${sectionId}/tsx`)
       if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || 'TSXが見つかりません')
+        let message = 'TSXが見つかりません'
+        try {
+          const data = await res.json()
+          message = data.error || message
+        } catch {}
+        throw new Error(message)
       }
       const { tsx, blockFamily } = await res.json()
       setTsxResult({ tsx, familyName: blockFamily })
@@ -279,6 +352,53 @@ export default function App() {
           <strong>{sourceCount}</strong>
         </div>
       </div>
+
+      {view !== 'library' && (
+        <div className="auto-crawl-section">
+          <div className="auto-crawl-header" onClick={() => setCrawlExpanded(!crawlExpanded)}>
+            <span className="auto-crawl-toggle">{crawlExpanded ? '\u25BC' : '\u25B6'}</span>
+            <span className="auto-crawl-title">Auto Crawl</span>
+            <span className={`auto-crawl-status ${crawlActive ? 'active' : 'idle'}`}>
+              {crawlActive ? 'Active' : 'Idle'}
+            </span>
+            <span className="auto-crawl-counts">
+              Queue: {crawlQueueCount} | Done: {crawlDoneCount}
+            </span>
+          </div>
+          {crawlExpanded && (
+            <div className="auto-crawl-body">
+              {crawlActive && crawlCurrentUrl && (
+                <div className="auto-crawl-current">
+                  Processing: <code>{crawlCurrentUrl}</code>
+                </div>
+              )}
+              <textarea
+                className="auto-crawl-textarea"
+                placeholder="Paste URLs here (one per line)..."
+                value={crawlUrls}
+                onChange={e => setCrawlUrls(e.target.value)}
+                rows={4}
+              />
+              <div className="auto-crawl-actions">
+                <button
+                  className="auto-crawl-btn start"
+                  onClick={handleCrawlSubmit}
+                  disabled={crawlSubmitting || !crawlUrls.trim()}
+                >
+                  {crawlSubmitting ? 'Adding...' : 'Add to Queue'}
+                </button>
+                <button
+                  className="auto-crawl-btn clear"
+                  onClick={handleCrawlClear}
+                  disabled={crawlQueueCount === 0}
+                >
+                  Clear Queue
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {view !== 'library' && (
         <URLInput onSubmit={handleExtract} loading={loading} error={error} jobStatus={jobStatus} />

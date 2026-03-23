@@ -76,7 +76,7 @@ export function SourcePreviewFrame({ htmlUrl, maxHeight, scale }: Props) {
           pointerEvents: 'none',
           display: 'block'
         }}
-        sandbox="allow-same-origin allow-scripts"
+        sandbox="allow-same-origin"
         referrerPolicy="no-referrer"
       />
     </div>

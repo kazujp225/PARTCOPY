@@ -57,7 +57,7 @@ async function downloadFile(url: string): Promise<{ data: Buffer; contentType: s
   try {
     const res = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
       },
       signal: AbortSignal.timeout(15000)
     })
@@ -230,7 +230,11 @@ export async function downloadSite(
 
   // Step 1: ページ取得（JS実行後）
   await page.setViewport({ width: 1440, height: 900 })
-  await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+  await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
+
+  // Random delay (1-3s) before navigation to appear more human-like
+  await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000))
+
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 })
 
   // Lazy-load scroll (timeout 30s to avoid hanging on infinite-scroll pages)

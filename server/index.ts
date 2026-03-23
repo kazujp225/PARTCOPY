@@ -35,6 +35,35 @@ import { STORAGE_BUCKETS } from './storage-config.js'
 import { logger } from './logger.js'
 import { convertHtmlToTsx } from './claude-converter.js'
 
+/**
+ * Sanitize error messages before sending to clients.
+ * Prevents leaking internal paths, stack traces, or DB details.
+ */
+function safeErrorMessage(err: any): string {
+  const msg = err?.message || 'Internal server error'
+  // Block messages that look like they contain file paths or stack traces
+  if (/\/[a-z_\-]+\//i.test(msg) || msg.includes('ENOENT') || msg.includes('at ') || msg.includes('node_modules')) {
+    return 'Internal server error'
+  }
+  return msg
+}
+
+/**
+ * Simple in-memory rate limiter for expensive endpoints.
+ */
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
+function rateLimit(key: string, maxPerWindow: number, windowMs: number): boolean {
+  const now = Date.now()
+  const entry = rateLimitMap.get(key)
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + windowMs })
+    return true
+  }
+  if (entry.count >= maxPerWindow) return false
+  entry.count++
+  return true
+}
+
 const app = express()
 app.use(cors({
   origin: (origin, callback) => {
@@ -732,6 +761,13 @@ app.get('/api/storage/:bucket', async (req, res) => {
 // Extract: Create a crawl job
 // ============================================================
 app.post('/api/extract', async (req, res) => {
+  // Rate limit: max 10 extract requests per minute per IP
+  const clientIp = req.ip || 'unknown'
+  if (!rateLimit(`extract:${clientIp}`, 10, 60_000)) {
+    res.status(429).json({ error: 'Too many requests. Please try again later.' })
+    return
+  }
+
   const { url, genre, tags } = req.body
   if (!url || typeof url !== 'string' || !/^https?:\/\/.+/.test(url)) {
     res.status(400).json({ error: 'Valid URL (http/https) is required' })
@@ -764,7 +800,7 @@ app.post('/api/extract', async (req, res) => {
     res.json({ jobId: job.id, siteId: site.id, status: 'queued' })
   } catch (err: any) {
     logger.error('Extract job creation failed', { url, error: err.message })
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -772,12 +808,16 @@ app.post('/api/extract', async (req, res) => {
 // Job status
 // ============================================================
 app.get('/api/jobs/:id', async (req, res) => {
-  const job = await getJobRecord(req.params.id)
-  if (!job) {
-    res.status(404).json({ error: 'Job not found' })
-    return
+  try {
+    const job = await getJobRecord(req.params.id)
+    if (!job) {
+      res.status(404).json({ error: 'Job not found' })
+      return
+    }
+    res.json({ job })
+  } catch (err: any) {
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
-  res.json({ job })
 })
 
 // ============================================================
@@ -798,7 +838,7 @@ app.get('/api/jobs/:id/sections', async (req, res) => {
 
     res.json({ sections })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -819,7 +859,8 @@ app.get('/api/sections/:sectionId/render', async (req, res) => {
       return
     }
 
-    const pageOrigin = record.page.url ? new URL(record.page.url).origin : ''
+    let pageOrigin = ''
+    try { if (record.page.url) pageOrigin = new URL(record.page.url).origin } catch {}
 
     // Prefer raw HTML (small, with clean /assets/ URLs)
     let storedHtml = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.section.raw_html_storage_path)
@@ -851,7 +892,7 @@ app.get('/api/sections/:sectionId/render', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache')
     res.send(html)
   } catch (err: any) {
-    res.status(500).send(err.message || 'Render failed')
+    res.status(500).send('Render failed')
   }
 })
 
@@ -896,7 +937,7 @@ app.get('/api/library', async (req, res) => {
       }))
     })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -907,7 +948,7 @@ app.get('/api/library/genres', async (req, res) => {
   try {
     res.json({ genres: await getGenreResults() })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -918,7 +959,7 @@ app.get('/api/library/families', async (req, res) => {
   try {
     res.json({ families: await getFamilyResults() })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -929,7 +970,7 @@ app.get('/api/block-variants', async (req, res) => {
   try {
     res.json({ variants: await getBlockVariantResults(typeof req.query.family === 'string' ? req.query.family : undefined) })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -952,7 +993,7 @@ app.delete('/api/library/:id', async (req, res) => {
     await deleteSectionRecord(req.params.id)
     res.json({ ok: true })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -975,7 +1016,7 @@ app.get('/api/sections/:sectionId/dom', async (req, res) => {
       nodes: record.nodes || []
     })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1006,7 +1047,7 @@ app.get('/api/sections/:sectionId/html', async (req, res) => {
     const html = await readBucketText(STORAGE_BUCKETS.RAW_HTML, section.raw_html_storage_path)
     res.json({ html, storagePath: section.raw_html_storage_path })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1040,7 +1081,7 @@ app.put('/api/sections/:sectionId/html', async (req, res) => {
     }
     res.json({ ok: true })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1065,7 +1106,7 @@ app.delete('/api/sections/:sectionId', async (req, res) => {
     await deleteSectionRecord(sectionId)
     res.json({ ok: true })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1081,7 +1122,8 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
       return
     }
 
-    const pageOrigin = record.page.url ? new URL(record.page.url).origin : ''
+    let pageOrigin = ''
+    try { if (record.page.url) pageOrigin = new URL(record.page.url).origin } catch {}
 
     let sectionHtml = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.resolvedSnapshot.html_storage_path)
     if (!sectionHtml) {
@@ -1169,7 +1211,7 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
     res.send(html)
   } catch (err: any) {
-    res.status(500).send(err.message || 'Editable render failed')
+    res.status(500).send('Editable render failed')
   }
 })
 
@@ -1197,7 +1239,7 @@ app.post('/api/sections/:sectionId/patch-sets', async (req, res) => {
     }
     res.json({ patchSet })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1245,7 +1287,7 @@ app.post('/api/patch-sets/:patchSetId/patches', async (req, res) => {
     }
     res.json({ patches: created })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1262,7 +1304,7 @@ app.get('/api/patch-sets/:patchSetId', async (req, res) => {
     }
     res.json(record)
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1300,7 +1342,7 @@ app.post('/api/projects/:projectId/page-blocks', async (req, res) => {
     const block = await createProjectPageBlockRecord(record)
     res.json({ block })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1344,7 +1386,7 @@ app.post('/api/sections/:sectionId/convert-tsx', async (req, res) => {
     res.json({ tsx, blockFamily })
   } catch (err: any) {
     logger.error('TSX conversion failed', { sectionId, error: err.message })
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1384,7 +1426,7 @@ app.get('/api/sections/:sectionId/tsx', async (req, res) => {
 
     res.json({ tsx, blockFamily })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1437,6 +1479,7 @@ app.post('/api/export/zip', async (req, res) => {
       }
 
       const componentName = blockFamily
+        .replace(/[^a-zA-Z0-9_]/g, '')
         .split('_')
         .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
         .join('') + 'Section' + (i > 0 ? i : '')
@@ -1483,6 +1526,16 @@ app.post('/api/export/zip', async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename="partcopy-export.zip"')
 
     const archive = archiver('zip', { zlib: { level: 9 } })
+
+    archive.on('error', (archiveErr: Error) => {
+      logger.error('Archiver error mid-stream', { error: archiveErr.message })
+      if (!res.headersSent) {
+        res.status(500).json({ error: archiveErr.message })
+      } else {
+        res.end()
+      }
+    })
+
     archive.pipe(res)
 
     archive.append(indexHtml, { name: 'index.html' })
@@ -1498,8 +1551,62 @@ app.post('/api/export/zip', async (req, res) => {
   } catch (err: any) {
     logger.error('ZIP export failed', { error: err.message })
     if (!res.headersSent) {
-      res.status(500).json({ error: err.message })
+      res.status(500).json({ error: safeErrorMessage(err) })
     }
+  }
+})
+
+// ============================================================
+// Auto-Crawl Queue Management
+// ============================================================
+import {
+  getQueueStatus,
+  appendToQueue,
+  clearQueue,
+  startAutoCrawler,
+  isAutoCrawlActive
+} from './auto-crawler.js'
+
+app.get('/api/crawl-queue', async (_req, res) => {
+  try {
+    const status = await getQueueStatus()
+    res.json(status)
+  } catch (err: any) {
+    logger.error('Crawl queue status failed', { error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+app.post('/api/crawl-queue', async (req, res) => {
+  const { urls } = req.body
+  if (!Array.isArray(urls) || !urls.every((u: unknown) => typeof u === 'string')) {
+    res.status(400).json({ error: 'urls must be an array of strings' })
+    return
+  }
+
+  try {
+    const added = await appendToQueue(urls)
+
+    // Start auto-crawler if not already active
+    if (!isAutoCrawlActive() && added > 0) {
+      startAutoCrawler()
+    }
+
+    const status = await getQueueStatus()
+    res.json({ added, ...status })
+  } catch (err: any) {
+    logger.error('Crawl queue append failed', { error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+app.delete('/api/crawl-queue', async (_req, res) => {
+  try {
+    await clearQueue()
+    res.json({ cleared: true })
+  } catch (err: any) {
+    logger.error('Crawl queue clear failed', { error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
