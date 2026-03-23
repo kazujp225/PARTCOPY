@@ -67,8 +67,7 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
         <div className="canvas-empty">
           <div className="canvas-empty-icon" style={{ fontSize: '3rem' }}>&oplus;</div>
           <h3 style={{ fontSize: '1.25rem', margin: '0.75rem 0 0.5rem' }}>パーツを追加してページを組み立てよう</h3>
-          <p style={{ fontSize: '0.95rem' }}>左のパーツにホバーして「+ 追加」ボタンで Canvas に配置できます</p>
-          <p className="canvas-hint">ドラッグ&amp;ドロップで順序を変更</p>
+          <p style={{ fontSize: '0.95rem' }}>左のパネルからパーツを追加してください</p>
         </div>
       </main>
     )
@@ -155,8 +154,6 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
                     >
                       {editingIndex === i ? '閉じる' : '編集'}
                     </button>
-                    <button className="move-btn" onClick={() => i > 0 && onMove(i, i - 1)} disabled={i === 0} aria-label="上に移動">&#9650;</button>
-                    <button className="move-btn" onClick={() => i < items.length - 1 && onMove(i, i + 1)} disabled={i === items.length - 1} aria-label="下に移動">&#9660;</button>
                     <button className="canvas-remove-btn" onClick={() => onRemove(item.canvas.id)} aria-label="ブロックを削除">&times;</button>
                   </div>
                 </div>

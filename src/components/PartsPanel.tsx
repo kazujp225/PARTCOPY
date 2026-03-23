@@ -200,7 +200,6 @@ export function PartsPanel({ sections, onAdd, onRemove, onViewTsx }: Props) {
                   {section.tsx_code_storage_path && onViewTsx && (
                     <button className="tsx-btn" onClick={() => onViewTsx(section.id)}>TSX</button>
                   )}
-                  <button className="remove-btn-small" onClick={() => onRemove(section.id)}>削除</button>
                 </div>
               )}
             </div>

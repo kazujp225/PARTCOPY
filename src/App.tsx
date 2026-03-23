@@ -51,6 +51,8 @@ export default function App() {
   const [keywordSearching, setKeywordSearching] = useState(false)
   const [keywordResult, setKeywordResult] = useState<{ keywords: string[]; urls: string[] } | null>(null)
   const [selectedUrls, setSelectedUrls] = useState<Set<string>>(new Set())
+  const [newProjectName, setNewProjectName] = useState('')
+  const [showNewProject, setShowNewProject] = useState(false)
 
   // Persist canvas to localStorage (debounced to avoid excessive writes)
   useEffect(() => {
@@ -360,11 +362,9 @@ export default function App() {
     }
   }, [canvas])
 
-  const handleNewProject = async () => {
-    const name = prompt('プロジェクト名を入力')
-    if (!name?.trim()) return
+  const handleNewProject = async (name: string) => {
     try {
-      const res = await fetch('/api/projects', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name: name.trim()}) })
+      const res = await fetch('/api/projects', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name}) })
       if (res.ok) {
         const { project } = await res.json()
         setProjectList(prev => [project, ...prev])
@@ -454,9 +454,36 @@ export default function App() {
               )}
             </button>
           ))}
-          <button className="sidebar-project-new" onClick={handleNewProject}>
-            + 新規プロジェクト
-          </button>
+          {showNewProject ? (
+            <div className="sidebar-project-input">
+              <input
+                type="text"
+                placeholder="プロジェクト名"
+                value={newProjectName}
+                onChange={e => setNewProjectName(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && newProjectName.trim()) {
+                    handleNewProject(newProjectName.trim())
+                    setNewProjectName('')
+                    setShowNewProject(false)
+                  }
+                  if (e.key === 'Escape') setShowNewProject(false)
+                }}
+                autoFocus
+              />
+              <button onClick={() => {
+                if (newProjectName.trim()) {
+                  handleNewProject(newProjectName.trim())
+                  setNewProjectName('')
+                  setShowNewProject(false)
+                }
+              }}>作成</button>
+            </div>
+          ) : (
+            <button className="sidebar-project-new" onClick={() => setShowNewProject(true)}>
+              + 新規プロジェクト
+            </button>
+          )}
         </div>
         <div className="sidebar-stats">
           <div className="sidebar-stat">パーツ <strong>{sections.length}</strong></div>
