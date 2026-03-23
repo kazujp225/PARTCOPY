@@ -14,7 +14,7 @@ const DONE_FILE = path.resolve(process.cwd(), '.partcopy/crawl-done.txt')
 const CHECK_INTERVAL = 5 * 60 * 1000 // 5 minutes
 const MIN_DELAY = 30_000 // 30 seconds
 const MAX_DELAY = 90_000 // 90 seconds
-const API_PORT = Number(process.env.PARTCOPY_API_PORT || 3001)
+const API_PORT = Number(process.env.PARTCOPY_API_PORT || 3002)
 const API_BASE = `http://127.0.0.1:${API_PORT}`
 
 let active = false
@@ -174,7 +174,6 @@ async function checkAndProcess(): Promise<void> {
   } catch (err: any) {
     logger.error('Auto-crawl: processing error', { url, error: err.message })
   } finally {
-    active = false
     currentUrl = null
   }
 
@@ -183,6 +182,7 @@ async function checkAndProcess(): Promise<void> {
     const remaining = await readQueue()
     if (remaining.length > 0) {
       const delay = randomDelay()
+      currentUrl = `次のURL待機中... (${Math.round(delay / 1000)}秒後)`
       logger.info('Auto-crawl: next URL in queue, waiting before processing', {
         nextUrl: remaining[0],
         delayMs: delay,
@@ -191,9 +191,15 @@ async function checkAndProcess(): Promise<void> {
       timer = setTimeout(() => {
         checkAndProcess().catch(err => {
           logger.error('Auto-crawl: scheduled check failed', { error: err.message })
+          active = false
+          currentUrl = null
         })
       }, delay)
+    } else {
+      active = false
     }
+  } else {
+    active = false
   }
 }
 
