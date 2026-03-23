@@ -62,8 +62,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
-  height: 48px;
+  padding: 0 32px;
+  height: 96px;
   background: var(--header-bg);
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -78,14 +78,14 @@ body {
 }
 
 .app-logo h1 {
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 1.5px;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 2px;
   color: var(--header-text);
 }
 
 .app-tagline {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text3);
   font-weight: 400;
 }
