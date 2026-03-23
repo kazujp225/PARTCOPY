@@ -579,7 +579,7 @@ export default function App() {
             </div>
             {!jobStatus && sections.length > 0 && (
               <div className="terminal-footer">
-                <button className="terminal-view-btn" onClick={() => setLoading(false)}>
+                <button className="terminal-view-btn" onClick={() => { setLoading(false); setView('library') }}>
                   抽出結果を見る →
                 </button>
               </div>
