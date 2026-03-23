@@ -43,6 +43,9 @@ export default function App() {
   const [crawlUrls, setCrawlUrls] = useState('')
   const [crawlExpanded, setCrawlExpanded] = useState(false)
   const [crawlSubmitting, setCrawlSubmitting] = useState(false)
+  const [keywordSearch, setKeywordSearch] = useState('')
+  const [keywordSearching, setKeywordSearching] = useState(false)
+  const [keywordResult, setKeywordResult] = useState<{ keywords: string[]; urls: string[]; queued: number } | null>(null)
 
   // Persist canvas to localStorage (debounced to avoid excessive writes)
   useEffect(() => {
@@ -141,6 +144,26 @@ export default function App() {
       }
     } catch {}
   }, [])
+
+  const handleKeywordSearch = useCallback(async () => {
+    if (!keywordSearch.trim()) return
+    setKeywordSearching(true)
+    setKeywordResult(null)
+    try {
+      const res = await fetch('/api/keyword-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyword: keywordSearch.trim() })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setKeywordResult({ keywords: data.expandedKeywords, urls: data.urls, queued: data.queued })
+        setCrawlQueueCount(prev => prev + data.queued)
+        setCrawlActive(true)
+      }
+    } catch {}
+    setKeywordSearching(false)
+  }, [keywordSearch])
 
   const familyCount = new Set(sections.map(section => section.block_family)).size
   const sourceCount = new Set(
@@ -372,6 +395,45 @@ export default function App() {
           </div>
           {crawlExpanded && (
             <div className="auto-crawl-body">
+              <div className="keyword-search">
+                <div className="keyword-search-row">
+                  <input
+                    type="text"
+                    className="keyword-search-input"
+                    placeholder="業種キーワードで検索（例：マーケティング、IT、不動産）"
+                    value={keywordSearch}
+                    onChange={e => setKeywordSearch(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleKeywordSearch()}
+                    disabled={keywordSearching}
+                  />
+                  <button
+                    className="keyword-search-btn"
+                    onClick={handleKeywordSearch}
+                    disabled={keywordSearching || !keywordSearch.trim()}
+                  >
+                    {keywordSearching ? '検索中...' : '自動検索'}
+                  </button>
+                </div>
+                {keywordSearching && (
+                  <div className="keyword-search-status">
+                    <div className="loading-spinner" />
+                    <span>Claudeがキーワードを拡張中 → Google検索でURL取得中...</span>
+                  </div>
+                )}
+                {keywordResult && (
+                  <div className="keyword-search-result">
+                    <div className="keyword-tags">
+                      {keywordResult.keywords.map((kw, i) => (
+                        <span key={i} className="keyword-tag">{kw}</span>
+                      ))}
+                    </div>
+                    <p className="keyword-summary">
+                      {keywordResult.urls.length}サイト発見 → {keywordResult.queued}件をキューに追加しました
+                    </p>
+                  </div>
+                )}
+              </div>
+
               {crawlActive && crawlCurrentUrl && (
                 <div className="auto-crawl-current">
                   <div className="auto-crawl-url">処理中: <code>{crawlCurrentUrl}</code></div>
