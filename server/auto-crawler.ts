@@ -11,9 +11,9 @@ import { logger } from './logger.js'
 
 const QUEUE_FILE = path.resolve(process.cwd(), '.partcopy/crawl-queue.txt')
 const DONE_FILE = path.resolve(process.cwd(), '.partcopy/crawl-done.txt')
-const CHECK_INTERVAL = 30_000 // 30秒ごとにキューをチェック
-const MIN_DELAY = 10_000 // 10秒
-const MAX_DELAY = 30_000 // 30秒
+const CHECK_INTERVAL = 10_000 // 10秒ごとにキューをチェック
+const MIN_DELAY = 3_000 // 3秒
+const MAX_DELAY = 8_000 // 8秒
 const API_PORT = Number(process.env.PARTCOPY_API_PORT || 3002)
 const API_BASE = `http://127.0.0.1:${API_PORT}`
 
