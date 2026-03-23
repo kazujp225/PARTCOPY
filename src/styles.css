@@ -2748,3 +2748,131 @@ body {
   color: var(--text3);
   font-weight: 600;
 }
+
+.dashboard-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.dash-action-btn {
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  transition: all 0.15s;
+}
+
+.dash-action-btn:hover { background: var(--surface2); }
+
+.dash-action-btn.primary {
+  background: #2563eb;
+  color: white;
+  border-color: #2563eb;
+}
+
+.dash-action-btn.primary:hover { background: #1d4ed8; }
+
+.dash-crawl-status {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin-bottom: 24px;
+}
+
+.dash-crawl-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.dash-crawl-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.dash-crawl-progress-text {
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.dash-crawl-bar {
+  height: 6px;
+  background: var(--surface2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.dash-crawl-bar-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 3px;
+  transition: width 1s ease;
+}
+
+.dash-crawl-url {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text3);
+}
+
+.dash-empty {
+  color: var(--text3);
+  font-size: 13px;
+  text-align: center;
+  padding: 20px;
+}
+
+.dash-recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dash-recent-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--surface2);
+  border-radius: 8px;
+}
+
+.dash-recent-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dash-recent-domain {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dash-recent-time {
+  font-size: 11px;
+  color: var(--text3);
+}
+
+.dash-recent-count {
+  font-size: 12px;
+  font-weight: 700;
+  color: #2563eb;
+}
+
+.dash-card.full-width {
+  grid-column: 1 / -1;
+}
+
+.dash-site-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}

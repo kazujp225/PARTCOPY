@@ -572,7 +572,7 @@ export default function App() {
         </div>
       )}
 
-      {view === 'dashboard' && <Dashboard sections={sections} canvas={canvas} />}
+      {view === 'dashboard' && <Dashboard sections={sections} canvas={canvas} onNavigate={(v) => setView(v as any)} />}
 
       {view === 'editor' && (
         <div className="editor-layout">
