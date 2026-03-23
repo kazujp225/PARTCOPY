@@ -458,25 +458,6 @@ export default function App() {
             + 新規プロジェクト
           </button>
         </div>
-        <div className="sidebar-projects">
-          <span className="sidebar-nav-label">取得済みサイト</span>
-          {[...new Map(sections.map(s => [
-            s.source_sites?.normalized_domain || '?',
-            sections.filter(x => x.source_sites?.normalized_domain === s.source_sites?.normalized_domain).length
-          ])).entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([domain, count]) => (
-            <button
-              key={domain}
-              className={`sidebar-project-btn ${selectedSite === domain ? 'active' : ''}`}
-              onClick={() => {
-                setSelectedSite(selectedSite === domain ? null : domain)
-                setView('editor')
-              }}
-            >
-              <span>{domain}</span>
-              <span className="sidebar-site-count">{count}</span>
-            </button>
-          ))}
-        </div>
         <div className="sidebar-stats">
           <div className="sidebar-stat">パーツ <strong>{sections.length}</strong></div>
           <div className="sidebar-stat">サイト <strong>{sourceCount}</strong></div>
