@@ -172,10 +172,15 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
                       sectionId={item.section.id}
                       onNodeSelect={handleNodeSelect}
                     />
-                  ) : (
-                    <SourcePreviewFrame
-                      htmlUrl={htmlUrlWithKey}
+                  ) : item.section.thumbnail_storage_path ? (
+                    <img
+                      className="canvas-block-thumb"
+                      src={`/assets/${item.section.thumbnail_storage_path}`}
+                      alt={item.section.block_family}
+                      loading="lazy"
                     />
+                  ) : (
+                    <SourcePreviewFrame htmlUrl={htmlUrlWithKey} />
                   )}
                 </div>
               </div>
