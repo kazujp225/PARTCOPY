@@ -2214,6 +2214,30 @@ body {
   font-weight: 700;
 }
 
+/* ローディングスピナー */
+.loading-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.library-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--text2);
+  font-size: 14px;
+  justify-content: center;
+}
+
 /* 自動取得 — 処理ステップ表示 */
 .auto-crawl-steps {
   margin-top: 12px;
