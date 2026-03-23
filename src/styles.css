@@ -3170,3 +3170,13 @@ body {
   font-size: 12px;
   font-weight: 500;
 }
+
+.canvas-block-thumb {
+  width: 100%;
+  height: auto;
+  display: block;
+  max-height: 400px;
+  object-fit: contain;
+  object-position: top center;
+  background: var(--surface2);
+}
