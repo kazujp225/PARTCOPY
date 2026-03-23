@@ -431,6 +431,42 @@ export default function App() {
           onClose={() => setTsxResult(null)}
         />
       )}
+
+      {loading && (
+        <div className="loading-overlay">
+          <div className="loading-terminal">
+            <div className="terminal-header">
+              <span className="terminal-dot red" />
+              <span className="terminal-dot yellow" />
+              <span className="terminal-dot green" />
+              <span className="terminal-title">PARTCOPY — 解析中</span>
+            </div>
+            <div className="terminal-body">
+              <div className="terminal-line typing-1">
+                <span className="terminal-prompt">$</span> サイトに接続しています...
+              </div>
+              <div className="terminal-line typing-2">
+                <span className="terminal-prompt">$</span> HTML / CSS / 画像 / フォントをダウンロード中...
+              </div>
+              <div className="terminal-line typing-3">
+                <span className="terminal-prompt">$</span> セクションを検出しています...
+              </div>
+              <div className="terminal-line typing-4">
+                <span className="terminal-prompt">$</span> パーツを分類しています...
+              </div>
+              <div className="terminal-line typing-5">
+                <span className="terminal-prompt">&gt;</span> Claude が TSX に変換中...
+              </div>
+              {jobStatus && (
+                <div className="terminal-status">
+                  <span className="terminal-cursor" />
+                  {jobStatus}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       </ErrorBoundary>
     </div>
   )

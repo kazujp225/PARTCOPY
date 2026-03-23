@@ -2017,3 +2017,124 @@ body {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
+
+/* ============================================================
+   Loading Overlay — ターミナル風アニメーション
+   ============================================================ */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-terminal {
+  width: min(90vw, 600px);
+  background: #0d1117;
+  border-radius: 12px;
+  box-shadow: 0 0 60px rgba(16, 185, 129, 0.15), 0 20px 40px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  border: 1px solid #21262d;
+}
+
+.terminal-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 16px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+}
+
+.terminal-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+.terminal-dot.red { background: #ff5f57; }
+.terminal-dot.yellow { background: #febc2e; }
+.terminal-dot.green { background: #28c840; }
+
+.terminal-title {
+  margin-left: 8px;
+  color: #8b949e;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.terminal-body {
+  padding: 20px;
+  min-height: 200px;
+}
+
+.terminal-line {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  line-height: 2;
+  color: #c9d1d9;
+  opacity: 0;
+  animation: terminal-type 0.5s ease forwards;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.terminal-line.typing-1 { animation-delay: 0.3s; }
+.terminal-line.typing-2 { animation-delay: 1.5s; }
+.terminal-line.typing-3 { animation-delay: 3.0s; }
+.terminal-line.typing-4 { animation-delay: 5.0s; }
+.terminal-line.typing-5 { animation-delay: 7.0s; color: #10b981; }
+
+.terminal-prompt {
+  color: #10b981;
+  margin-right: 8px;
+  font-weight: bold;
+}
+
+.terminal-status {
+  margin-top: 16px;
+  padding: 10px 12px;
+  background: #161b22;
+  border-radius: 6px;
+  border: 1px solid #21262d;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  color: #58a6ff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: terminal-type 0.5s ease forwards;
+  animation-delay: 8s;
+  opacity: 0;
+}
+
+.terminal-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  background: #10b981;
+  animation: cursor-blink 1s step-end infinite;
+}
+
+@keyframes terminal-type {
+  0% {
+    opacity: 0;
+    max-width: 0;
+  }
+  10% {
+    opacity: 1;
+    max-width: 0;
+  }
+  100% {
+    opacity: 1;
+    max-width: 100%;
+  }
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
