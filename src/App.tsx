@@ -374,7 +374,42 @@ export default function App() {
             <div className="auto-crawl-body">
               {crawlActive && crawlCurrentUrl && (
                 <div className="auto-crawl-current">
-                  処理中: <code>{crawlCurrentUrl}</code>
+                  <div className="auto-crawl-url">処理中: <code>{crawlCurrentUrl}</code></div>
+                  <div className="auto-crawl-steps">
+                    <div className="crawl-step active">
+                      <span className="crawl-step-icon">●</span>
+                      <div className="crawl-step-detail">
+                        <strong>1. サイトをダウンロード</strong>
+                        <span>HTML・CSS・画像・フォントを取得中</span>
+                      </div>
+                    </div>
+                    <div className="crawl-step">
+                      <span className="crawl-step-icon">○</span>
+                      <div className="crawl-step-detail">
+                        <strong>2. パーツに分解</strong>
+                        <span>ヘッダー・ヒーロー・料金表などに自動分割</span>
+                      </div>
+                    </div>
+                    <div className="crawl-step">
+                      <span className="crawl-step-icon">○</span>
+                      <div className="crawl-step-detail">
+                        <strong>3. TSXに変換</strong>
+                        <span>Claudeがデザインを保ったままコード化</span>
+                      </div>
+                    </div>
+                    <div className="crawl-step">
+                      <span className="crawl-step-icon">○</span>
+                      <div className="crawl-step-detail">
+                        <strong>4. ライブラリに保存</strong>
+                        <span>次のURLへ自動で進みます</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {!crawlActive && crawlDoneCount > 0 && (
+                <div className="auto-crawl-done-msg">
+                  ✓ {crawlDoneCount}サイトの処理が完了しました。ライブラリで確認できます。
                 </div>
               )}
               <textarea
