@@ -18,9 +18,10 @@ interface Props {
   onViewTsx?: (sectionId: string) => void
   onExportZip?: () => void
   exporting?: boolean
+  onSaveProject?: () => void
 }
 
-export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, exporting }: Props) {
+export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, exporting, onSaveProject }: Props) {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const dragRef = useRef<number | null>(null)
@@ -79,6 +80,9 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
         <div className="canvas-header">
           <h2>Canvas ({items.length} ブロック)</h2>
           <div className="canvas-header-actions">
+            {onSaveProject && (
+              <button className="save-project-btn" onClick={onSaveProject}>保存</button>
+            )}
             {onExportZip && items.length > 0 && (
               <button className="zip-btn primary" onClick={onExportZip} disabled={exporting}>
                 {exporting ? '出力中...' : '\u2193 ZIP ダウンロード'}

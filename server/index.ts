@@ -1865,6 +1865,80 @@ app.delete('/api/crawl-queue', async (_req, res) => {
   }
 })
 
+// ============================================================
+// Projects (Canvas configurations)
+// ============================================================
+app.get('/api/projects', async (_req, res) => {
+  try {
+    if (HAS_SUPABASE) {
+      const { data, error } = await supabaseAdmin
+        .from('projects')
+        .select('*')
+        .order('created_at', { ascending: false })
+      if (error) throw new Error(error.message)
+      res.json({ projects: data || [] })
+    } else {
+      res.json({ projects: [] })
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/projects', async (req, res) => {
+  const { name } = req.body
+  if (!name) { res.status(400).json({ error: 'name required' }); return }
+  try {
+    if (HAS_SUPABASE) {
+      const { data, error } = await supabaseAdmin
+        .from('projects')
+        .insert({ name, canvas_json: [] })
+        .select()
+        .single()
+      if (error) throw new Error(error.message)
+      res.json({ project: data })
+    } else {
+      res.json({ project: { id: crypto.randomUUID(), name, canvas_json: [], created_at: new Date().toISOString() } })
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.put('/api/projects/:id', async (req, res) => {
+  const { canvas_json, name } = req.body
+  try {
+    if (HAS_SUPABASE) {
+      const patch: any = {}
+      if (canvas_json !== undefined) patch.canvas_json = canvas_json
+      if (name !== undefined) patch.name = name
+      const { data, error } = await supabaseAdmin
+        .from('projects')
+        .update(patch)
+        .eq('id', req.params.id)
+        .select()
+        .single()
+      if (error) throw new Error(error.message)
+      res.json({ project: data })
+    } else {
+      res.json({ ok: true })
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.delete('/api/projects/:id', async (req, res) => {
+  try {
+    if (HAS_SUPABASE) {
+      await supabaseAdmin.from('projects').delete().eq('id', req.params.id)
+    }
+    res.json({ deleted: true })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 const PORT = Number(process.env.PARTCOPY_API_PORT || 3001)
 const server = app.listen(PORT, () => {
   logger.info('API server started', { port: PORT, supabase: HAS_SUPABASE })

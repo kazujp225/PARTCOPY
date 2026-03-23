@@ -35,6 +35,8 @@ export default function App() {
   const [tsxResult, setTsxResult] = useState<{ tsx: string; familyName?: string } | null>(null)
   const [exporting, setExporting] = useState(false)
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
+  const [projectList, setProjectList] = useState<Array<{id: string; name: string; canvas_json: any[]; created_at: string}>>([])
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
 
   // Auto-crawl state
   const [crawlQueueCount, setCrawlQueueCount] = useState(0)
@@ -57,6 +59,11 @@ export default function App() {
     }, 300)
     return () => clearTimeout(timer)
   }, [canvas])
+
+  // Load projects on mount
+  useEffect(() => {
+    fetch('/api/projects').then(r => r.json()).then(d => setProjectList(d.projects || [])).catch(() => {})
+  }, [])
 
   // Load all sections from library on mount
   useEffect(() => {
@@ -353,6 +360,53 @@ export default function App() {
     }
   }, [canvas])
 
+  const handleNewProject = async () => {
+    const name = prompt('プロジェクト名を入力')
+    if (!name?.trim()) return
+    try {
+      const res = await fetch('/api/projects', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name: name.trim()}) })
+      if (res.ok) {
+        const { project } = await res.json()
+        setProjectList(prev => [project, ...prev])
+        // Save current canvas to old project before switching
+        if (activeProjectId) {
+          await fetch(`/api/projects/${activeProjectId}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({canvas_json: canvas}) })
+        }
+        setActiveProjectId(project.id)
+        setCanvas([])
+        setView('editor')
+      }
+    } catch {}
+  }
+
+  const handleSwitchProject = async (projectId: string) => {
+    // Save current
+    if (activeProjectId) {
+      await fetch(`/api/projects/${activeProjectId}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({canvas_json: canvas}) }).catch(() => {})
+    }
+    const target = projectList.find(p => p.id === projectId)
+    if (target) {
+      setCanvas(target.canvas_json || [])
+      setActiveProjectId(projectId)
+      setView('editor')
+    }
+  }
+
+  const handleSaveProject = async () => {
+    if (!activeProjectId) return
+    await fetch(`/api/projects/${activeProjectId}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({canvas_json: canvas}) }).catch(() => {})
+    alert('保存しました')
+  }
+
+  const handleDeleteProject = async (projectId: string) => {
+    await fetch(`/api/projects/${projectId}`, { method: 'DELETE' }).catch(() => {})
+    setProjectList(prev => prev.filter(p => p.id !== projectId))
+    if (activeProjectId === projectId) {
+      setActiveProjectId(null)
+      setCanvas([])
+    }
+  }
+
   const filteredSections = selectedSite
     ? sections.filter(s => s.source_sites?.normalized_domain === selectedSite)
     : sections
@@ -385,6 +439,25 @@ export default function App() {
             プレビュー
           </button>
         </nav>
+        <div className="sidebar-projects">
+          <span className="sidebar-nav-label">プロジェクト</span>
+          {projectList.map(p => (
+            <button
+              key={p.id}
+              className={`sidebar-project-btn ${p.id === activeProjectId ? 'active' : ''}`}
+              onClick={() => handleSwitchProject(p.id)}
+            >
+              <span>{p.name}</span>
+              {p.id === activeProjectId && <span className="sidebar-site-count">編集中</span>}
+              {p.id !== activeProjectId && (
+                <span className="sidebar-project-delete" onClick={e => { e.stopPropagation(); handleDeleteProject(p.id) }}>×</span>
+              )}
+            </button>
+          ))}
+          <button className="sidebar-project-new" onClick={handleNewProject}>
+            + 新規プロジェクト
+          </button>
+        </div>
         <div className="sidebar-projects">
           <span className="sidebar-nav-label">取得済みサイト</span>
           {[...new Map(sections.map(s => [
@@ -600,7 +673,7 @@ export default function App() {
       {view === 'editor' && (
         <div className="editor-layout">
           <PartsPanel sections={filteredSections} onAdd={addToCanvas} onRemove={removeSection} onViewTsx={handleViewTsx} />
-          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onExportZip={handleExportZip} exporting={exporting} />
+          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onExportZip={handleExportZip} exporting={exporting} onSaveProject={activeProjectId ? handleSaveProject : undefined} />
         </div>
       )}
 
