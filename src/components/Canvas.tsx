@@ -15,9 +15,12 @@ interface Props {
   items: CanvasItem[]
   onRemove: (canvasId: string) => void
   onMove: (from: number, to: number) => void
+  onViewTsx?: (sectionId: string) => void
+  onExportZip?: () => void
+  exporting?: boolean
 }
 
-export function Canvas({ items, onRemove, onMove }: Props) {
+export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, exporting }: Props) {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const dragRef = useRef<number | null>(null)
@@ -63,7 +66,7 @@ export function Canvas({ items, onRemove, onMove }: Props) {
         <div className="canvas-empty">
           <div className="canvas-empty-icon">&#10010;</div>
           <h3>Canvas</h3>
-          <p>左のパーツにホバーして「+ Canvas」で配置</p>
+          <p>左のパーツにホバーして「+ 追加」で配置</p>
           <p className="canvas-hint">ドラッグ&ドロップで順序変更</p>
         </div>
       </main>
@@ -74,12 +77,19 @@ export function Canvas({ items, onRemove, onMove }: Props) {
     <div className="canvas-with-inspector">
       <main className="canvas">
         <div className="canvas-header">
-          <h2>Canvas ({items.length} blocks)</h2>
-          {editingIndex !== null && (
-            <button className="inspector-btn" onClick={() => { setEditingIndex(null); setSelectedNode(null) }}>
-              編集を閉じる
-            </button>
-          )}
+          <h2>Canvas ({items.length} ブロック)</h2>
+          <div className="canvas-header-actions">
+            {onExportZip && items.length > 0 && (
+              <button className="zip-btn" onClick={onExportZip} disabled={exporting}>
+                {exporting ? '出力中...' : 'ZIP ダウンロード'}
+              </button>
+            )}
+            {editingIndex !== null && (
+              <button className="inspector-btn" onClick={() => { setEditingIndex(null); setSelectedNode(null) }}>
+                編集を閉じる
+              </button>
+            )}
+          </div>
         </div>
         <div className="canvas-blocks">
           {items.map((item, i) => {
@@ -94,7 +104,7 @@ export function Canvas({ items, onRemove, onMove }: Props) {
                 className={`canvas-block ${dragIndex === i ? 'dragging' : ''} ${dragOverIndex === i ? 'drag-over' : ''} ${editingIndex === i ? 'editing' : ''}`}
                 tabIndex={0}
                 role="group"
-                aria-label={`Block ${i + 1}: ${item.section.block_family}`}
+                aria-label={`ブロック ${i + 1}: ${item.section.block_family}`}
                 draggable={editingIndex === null}
                 onDragStart={() => handleDragStart(i)}
                 onDragOver={e => handleDragOver(e, i)}
@@ -110,7 +120,7 @@ export function Canvas({ items, onRemove, onMove }: Props) {
                 }}
               >
                 <div className="canvas-block-toolbar">
-                  <span className="drag-handle" aria-label="Drag to reorder">&#9776;</span>
+                  <span className="drag-handle" aria-label="ドラッグで並べ替え">&#9776;</span>
                   <span className="canvas-block-badge" style={{ background: FAMILY_COLORS[item.section.block_family] || '#94a3b8' }}>
                     {item.section.block_family}
                   </span>
@@ -118,11 +128,16 @@ export function Canvas({ items, onRemove, onMove }: Props) {
                     {item.section.source_sites?.normalized_domain || ''}
                   </span>
                   <div className="canvas-block-actions">
+                    {item.section.tsx_code_storage_path && onViewTsx && (
+                      <button className="tsx-btn" onClick={() => onViewTsx(item.section.id)} title="TSXコード表示">
+                        TSX
+                      </button>
+                    )}
                     <button
                       className="code-btn"
                       onClick={() => setCodeEditingIndex(codeEditingIndex === i ? null : i)}
                       title="HTMLコード編集"
-                      aria-label="Edit HTML code"
+                      aria-label="HTMLコード編集"
                     >
                       &lt;/&gt;
                     </button>
@@ -132,13 +147,13 @@ export function Canvas({ items, onRemove, onMove }: Props) {
                         setEditingIndex(editingIndex === i ? null : i)
                         setSelectedNode(null)
                       }}
-                      aria-label={editingIndex === i ? 'Close visual editor' : 'Open visual editor'}
+                      aria-label={editingIndex === i ? 'ビジュアル編集を閉じる' : 'ビジュアル編集を開く'}
                     >
                       {editingIndex === i ? '閉じる' : '編集'}
                     </button>
-                    <button className="move-btn" onClick={() => i > 0 && onMove(i, i - 1)} disabled={i === 0} aria-label="Move block up">&#9650;</button>
-                    <button className="move-btn" onClick={() => i < items.length - 1 && onMove(i, i + 1)} disabled={i === items.length - 1} aria-label="Move block down">&#9660;</button>
-                    <button className="canvas-remove-btn" onClick={() => onRemove(item.canvas.id)} aria-label="Remove block">&times;</button>
+                    <button className="move-btn" onClick={() => i > 0 && onMove(i, i - 1)} disabled={i === 0} aria-label="上に移動">&#9650;</button>
+                    <button className="move-btn" onClick={() => i < items.length - 1 && onMove(i, i + 1)} disabled={i === items.length - 1} aria-label="下に移動">&#9660;</button>
+                    <button className="canvas-remove-btn" onClick={() => onRemove(item.canvas.id)} aria-label="ブロックを削除">&times;</button>
                   </div>
                 </div>
                 <div className="canvas-block-preview">

@@ -29,6 +29,7 @@ export interface CrawlJob {
   id: string
   site_id: string
   status: JobStatus
+  status_detail?: string
   page_count: number
   section_count: number
   error_message?: string
@@ -63,6 +64,8 @@ export interface SourceSection {
   htmlUrl?: string
   raw_html_storage_path?: string
   sanitized_html_storage_path?: string
+  tsx_code_storage_path?: string
+  tsxUrl?: string
   source_pages?: { url: string; title: string }
   source_sites?: { normalized_domain: string; genre: string; tags: string[]; industry?: string }
   created_at: string

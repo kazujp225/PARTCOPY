@@ -18,10 +18,13 @@ import {
   insertBlockInstance,
   insertPageAssets,
   insertSectionNodes,
+  readStoredText,
   updateCrawlRun,
+  updateSourceSection,
   updateSourceSite,
   writeStoredFile
 } from './local-store.js'
+import { convertHtmlToTsx } from './claude-converter.js'
 import { HAS_SUPABASE, supabaseAdmin } from './supabase.js'
 import { STORAGE_BUCKETS } from './storage-config.js'
 import { launchBrowser } from './capture-runner.js'
@@ -32,6 +35,7 @@ import { classifySection, type RawSection } from './classifier.js'
 import { canonicalizeSection } from './canonicalizer.js'
 import { parseSectionDOM } from './dom-parser.js'
 import { logger } from './logger.js'
+import { startAutoCrawler } from './auto-crawler.js'
 
 const WORKER_ID = `worker-${process.pid}`
 const POLL_INTERVAL = 3000
@@ -39,6 +43,20 @@ const MAX_RETRIES = 3
 const RETRY_BASE_DELAY_S = 5
 const DATA_RETENTION_DAYS = Number(process.env.DATA_RETENTION_DAYS) || 30
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
+const SITE_TIMEOUT_MS = 180000 // 180s overall timeout for download + section detection
+const DOWNLOAD_TIMEOUT_MS = 150000 // 150s timeout for site download (images+fonts take time)
+const DETECT_TIMEOUT_MS = 30000 // 30s timeout for section detection
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<{ result: T; timedOut: false } | { result: undefined; timedOut: true }> {
+  let timer: ReturnType<typeof setTimeout>
+  const timeout = new Promise<{ result: undefined; timedOut: true }>((resolve) => {
+    timer = setTimeout(() => resolve({ result: undefined, timedOut: true }), ms)
+  })
+  return Promise.race([
+    promise.then((result) => ({ result, timedOut: false as const })).finally(() => clearTimeout(timer)),
+    timeout
+  ])
+}
 
 let shuttingDown = false
 process.on('SIGTERM', () => { shuttingDown = true; logger.info('Shutdown signal received', { signal: 'SIGTERM', workerId: WORKER_ID }); setTimeout(() => process.exit(0), 3000).unref() })
@@ -290,11 +308,30 @@ async function processJob(job: any) {
 
     // ========== Phase 1: Complete Site Download ==========
     logger.info('Phase 1: Downloading site', { jobId: job.id, url })
-    const dl = await downloadSite(page, url, site.id, job.id)
+    const dlResult = await withTimeout(downloadSite(page, url, site.id, job.id), DOWNLOAD_TIMEOUT_MS, 'downloadSite')
+    let dl: Awaited<ReturnType<typeof downloadSite>>
+    if (dlResult.timedOut) {
+      logger.warn('Phase 1 timeout: downloadSite exceeded 60s, attempting to use partial page content', { jobId: job.id, url })
+      // Try to get whatever HTML is on the page and build a minimal dl object
+      const partialHtml = await page.content().catch(() => '<html><body></body></html>')
+      const pageTitle = await page.title().catch(() => '')
+      dl = {
+        finalHtml: partialHtml,
+        title: pageTitle,
+        cssFiles: [],
+        imageFiles: [],
+        fontFiles: [],
+        allAssets: [],
+        pageOrigin: new URL(url).origin
+      } as any
+      logger.warn('Using partial page content after download timeout', { jobId: job.id, htmlLength: partialHtml.length })
+    } else {
+      dl = dlResult.result
+    }
     logger.info('Download complete', { jobId: job.id, title: dl.title, cssCount: dl.cssFiles.length, imageCount: dl.imageFiles.length, fontCount: dl.fontFiles.length })
 
     // ========== Phase 2: Store page-level data ==========
-    await setCrawlRunStatus(job.id, { status: 'parsed' })
+    await setCrawlRunStatus(job.id, { status: 'parsed', status_detail: 'サイトダウンロード完了' })
 
     // Upload rewritten HTML
     const finalHtmlPath = `${site.id}/${job.id}/final.html`
@@ -349,8 +386,17 @@ async function processJob(job: any) {
     // ========== Phase 3: Section Detection ==========
     await setCrawlRunStatus(job.id, { status: 'normalizing' })
 
-    const sections = await detectSections(page)
+    const detectResult = await withTimeout(detectSections(page), DETECT_TIMEOUT_MS, 'detectSections')
+    let sections: Awaited<ReturnType<typeof detectSections>>
+    if (detectResult.timedOut) {
+      logger.warn('Phase 3 timeout: detectSections exceeded 30s, continuing with empty sections', { jobId: job.id })
+      sections = []
+    } else {
+      sections = detectResult.result
+    }
     logger.info('Sections detected', { jobId: job.id, sectionCount: sections.length })
+
+    await setCrawlRunStatus(job.id, { status: 'normalizing', status_detail: `${sections.length}セクション検出` })
 
     // Build URL rewrite map for section HTML
     const urlMap = new Map<string, string>()
@@ -361,8 +407,10 @@ async function processJob(job: any) {
 
     // ========== Phase 4: Classify + Store each section ==========
     let sectionCount = 0
+    const tsxTasks: Array<{ sectionId: string; html: string; family: string; index: number }> = []
 
     for (const section of sections) {
+      await setCrawlRunStatus(job.id, { status_detail: `セクション ${section.index + 1}/${sections.length} 処理中` })
       logger.debug('Processing section', { jobId: job.id, sectionIndex: section.index, total: sections.length, tagName: section.tagName, height: Math.round(section.boundingBox.height) })
 
       // Classify
@@ -500,6 +548,9 @@ async function processJob(job: any) {
         }
       }
 
+      // Collect task info for background TSX conversion (Phase 6)
+      tsxTasks.push({ sectionId: sectionRow.id, html: sectionHtml, family: classification.type, index: section.index })
+
       sectionCount++
     }
 
@@ -514,6 +565,35 @@ async function processJob(job: any) {
     await markSiteAnalyzed(site.id)
 
     logger.info('Job completed', { jobId: job.id, siteId: site.id, url, sectionCount, assetCount: dl.allAssets.length })
+
+    // ========== Phase 6: Background TSX Conversion ==========
+    if (tsxTasks.length > 0) {
+      await setCrawlRunStatus(job.id, { status_detail: 'TSX変換中...' })
+      logger.info('Phase 6: Starting background TSX conversion', { jobId: job.id, taskCount: tsxTasks.length })
+
+      const BATCH_SIZE = 3
+      for (let i = 0; i < tsxTasks.length; i += BATCH_SIZE) {
+        const batch = tsxTasks.slice(i, i + BATCH_SIZE)
+        await Promise.allSettled(batch.map(async (task) => {
+          try {
+            const tsx = await convertHtmlToTsx(task.html, task.family)
+            const tsxPath = `${site.id}/${job.id}/component_${task.index}.tsx`
+            await uploadBuffer(STORAGE_BUCKETS.SANITIZED_HTML, tsxPath, tsx, 'text/plain')
+            // update DB
+            if (!HAS_SUPABASE) {
+              await updateSourceSection(task.sectionId, { tsx_code_storage_path: tsxPath })
+            } else {
+              await supabaseAdmin.from('source_sections').update({ tsx_code_storage_path: tsxPath }).eq('id', task.sectionId)
+            }
+          } catch (err: any) {
+            logger.warn('TSX conversion failed', { sectionId: task.sectionId, error: err.message })
+          }
+        }))
+        await setCrawlRunStatus(job.id, { status_detail: `TSX変換中 (Claude) ${Math.min(i + BATCH_SIZE, tsxTasks.length)}/${tsxTasks.length}` })
+      }
+
+      logger.info('Phase 6: TSX conversion complete', { jobId: job.id, taskCount: tsxTasks.length })
+    }
 
   } catch (err: any) {
     const retryCount = Number(job.retry_count) || 0
@@ -535,7 +615,9 @@ async function processJob(job: any) {
       await failJob(job.id, 'PROCESSING_ERROR', `Failed after ${MAX_RETRIES} retries: ${err.message}`)
     }
   } finally {
-    await browser.close()
+    await browser.close().catch((closeErr: any) => {
+      logger.warn('Browser close failed (may already be closed)', { error: closeErr.message })
+    })
   }
 }
 
@@ -583,3 +665,11 @@ async function pollLoop() {
 }
 
 pollLoop()
+
+// Start auto-crawler if queue file exists
+import { existsSync } from 'fs'
+import path from 'path'
+const CRAWL_QUEUE_PATH = path.resolve(process.cwd(), '.partcopy/crawl-queue.txt')
+if (existsSync(CRAWL_QUEUE_PATH)) {
+  startAutoCrawler()
+}

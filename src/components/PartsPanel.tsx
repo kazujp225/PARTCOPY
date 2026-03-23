@@ -4,23 +4,23 @@ import { SourcePreviewFrame } from './SourcePreviewFrame'
 import { FAMILY_COLORS } from '../constants'
 
 const FAMILY_LABELS: Record<string, string> = {
-  navigation: 'Nav',
-  hero: 'Hero',
-  feature: 'Feature',
-  social_proof: 'Social Proof',
-  stats: 'Stats',
-  pricing: 'Pricing',
+  navigation: 'ナビ',
+  hero: 'ヒーロー',
+  feature: '特徴',
+  social_proof: '実績・声',
+  stats: '数値',
+  pricing: '料金',
   faq: 'FAQ',
-  content: 'Content',
+  content: 'コンテンツ',
   cta: 'CTA',
-  contact: 'Contact',
-  recruit: 'Recruit',
-  footer: 'Footer',
-  news_list: 'News',
-  timeline: 'Timeline',
-  company_profile: 'Company',
-  gallery: 'Gallery',
-  logo_cloud: 'Logo Cloud'
+  contact: 'お問い合わせ',
+  recruit: '採用',
+  footer: 'フッター',
+  news_list: 'お知らせ',
+  timeline: '沿革',
+  company_profile: '会社概要',
+  gallery: 'ギャラリー',
+  logo_cloud: 'ロゴ一覧'
 }
 
 
@@ -30,9 +30,10 @@ interface Props {
   sections: SourceSection[]
   onAdd: (sectionId: string) => void
   onRemove: (sectionId: string) => void
+  onViewTsx?: (sectionId: string) => void
 }
 
-export function PartsPanel({ sections, onAdd, onRemove }: Props) {
+export function PartsPanel({ sections, onAdd, onRemove, onViewTsx }: Props) {
   const [filter, setFilter] = useState<string | 'all'>('all')
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
@@ -110,7 +111,7 @@ export function PartsPanel({ sections, onAdd, onRemove }: Props) {
     <aside className="parts-panel">
       <div className="parts-header">
         <div className="parts-header-row">
-          <h2>Parts ({sections.length})</h2>
+          <h2>パーツ ({sections.length})</h2>
           <span className="parts-results-count">{filtered.length}件表示</span>
         </div>
         <div className="parts-management-bar">
@@ -119,7 +120,7 @@ export function PartsPanel({ sections, onAdd, onRemove }: Props) {
             className="parts-search-input"
             value={query}
             onChange={event => setQuery(event.target.value)}
-            placeholder="検索: family / domain / summary"
+            placeholder="検索: 種別 / ドメイン / 概要"
           />
           <select
             className="parts-select"
@@ -128,8 +129,8 @@ export function PartsPanel({ sections, onAdd, onRemove }: Props) {
           >
             <option value="position">抽出順</option>
             <option value="confidence">信頼度順</option>
-            <option value="family">family順</option>
-            <option value="source">source順</option>
+            <option value="family">種別順</option>
+            <option value="source">サイト順</option>
           </select>
         </div>
         <div className="parts-toggle-row">
@@ -150,7 +151,7 @@ export function PartsPanel({ sections, onAdd, onRemove }: Props) {
         </div>
         <div className="parts-filters">
           <button className={`filter-btn ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
-            All ({sections.length})
+            すべて ({sections.length})
           </button>
           {Object.entries(familyCounts)
             .sort((a, b) => b[1] - a[1])
@@ -190,11 +191,15 @@ export function PartsPanel({ sections, onAdd, onRemove }: Props) {
                 <span className="part-type-badge" style={{ background: FAMILY_COLORS[section.block_family] || '#94a3b8' }}>
                   {FAMILY_LABELS[section.block_family] || section.block_family}
                 </span>
+                {section.tsx_code_storage_path && <span className="tsx-ready-badge">TSX</span>}
                 <span className="part-confidence">{Math.round(section.classifier_confidence * 100)}%</span>
               </div>
               {hoveredId === section.id && (
                 <div className="part-overlay-actions">
-                  <button className="add-btn-large" onClick={() => onAdd(section.id)}>+ Canvas</button>
+                  <button className="add-btn-large" onClick={() => onAdd(section.id)}>+ 追加</button>
+                  {section.tsx_code_storage_path && onViewTsx && (
+                    <button className="tsx-btn" onClick={() => onViewTsx(section.id)}>TSX</button>
+                  )}
                   <button className="remove-btn-small" onClick={() => onRemove(section.id)}>削除</button>
                 </div>
               )}

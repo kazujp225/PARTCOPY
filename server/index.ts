@@ -4,6 +4,7 @@
  */
 import express from 'express'
 import cors from 'cors'
+import archiver from 'archiver'
 import {
   addPatches,
   createCrawlRun,
@@ -32,6 +33,36 @@ import {
 import { HAS_SUPABASE, supabaseAdmin } from './supabase.js'
 import { STORAGE_BUCKETS } from './storage-config.js'
 import { logger } from './logger.js'
+import { convertHtmlToTsx } from './claude-converter.js'
+
+/**
+ * Sanitize error messages before sending to clients.
+ * Prevents leaking internal paths, stack traces, or DB details.
+ */
+function safeErrorMessage(err: any): string {
+  const msg = err?.message || 'Internal server error'
+  // Block messages that look like they contain file paths or stack traces
+  if (/\/[a-z_\-]+\//i.test(msg) || msg.includes('ENOENT') || msg.includes('at ') || msg.includes('node_modules')) {
+    return 'Internal server error'
+  }
+  return msg
+}
+
+/**
+ * Simple in-memory rate limiter for expensive endpoints.
+ */
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
+function rateLimit(key: string, maxPerWindow: number, windowMs: number): boolean {
+  const now = Date.now()
+  const entry = rateLimitMap.get(key)
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + windowMs })
+    return true
+  }
+  if (entry.count >= maxPerWindow) return false
+  entry.count++
+  return true
+}
 
 const app = express()
 app.use(cors({
@@ -258,13 +289,13 @@ async function getJobSectionsRecord(jobId: string) {
     return { page, sections }
   }
 
-  const { data: page } = await supabaseAdmin
+  const { data: page, error: pageError } = await supabaseAdmin
     .from('source_pages')
     .select('id, css_bundle_path, url')
     .eq('crawl_run_id', jobId)
-    .limit(1)
-    .single()
+    .maybeSingle()
 
+  if (pageError) throw new Error(pageError.message)
   if (!page) return null
 
   const { data: sections, error } = await supabaseAdmin
@@ -640,25 +671,61 @@ async function getDefaultVariantRecord() {
 // Clean asset serving: /assets/{siteId}/{jobId}/...
 // ============================================================
 app.get('/assets/:siteId/:jobId/*', async (req, res) => {
+  const { siteId, jobId } = req.params
+  const filePath = req.params[0]
+  const storagePath = `${siteId}/${jobId}/${filePath}`
+
+  // Determine content type from extension
+  const ext = filePath.split('.').pop()?.toLowerCase() || ''
+  const contentTypes: Record<string, string> = {
+    css: 'text/css',
+    html: 'text/html',
+    js: 'application/javascript',
+    json: 'application/json',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    svg: 'image/svg+xml',
+    webp: 'image/webp',
+    woff: 'font/woff',
+    woff2: 'font/woff2',
+    ttf: 'font/ttf',
+    otf: 'font/otf',
+    eot: 'application/vnd.ms-fontobject',
+    ico: 'image/x-icon',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+  }
+  const contentType = contentTypes[ext] || 'application/octet-stream'
+
   if (HAS_SUPABASE) {
-    res.status(404).send('Not found in local mode')
+    // Try all relevant buckets
+    for (const bucket of [STORAGE_BUCKETS.RAW_HTML, STORAGE_BUCKETS.SANITIZED_HTML, STORAGE_BUCKETS.SECTION_THUMBNAILS, STORAGE_BUCKETS.PAGE_SCREENSHOTS]) {
+      const { data, error } = await supabaseAdmin.storage.from(bucket).download(storagePath)
+      if (data && !error) {
+        const buffer = Buffer.from(await data.arrayBuffer())
+        res.setHeader('Content-Type', contentType)
+        res.setHeader('Cache-Control', 'public, max-age=86400')
+        res.send(buffer)
+        return
+      }
+    }
+    res.status(404).send('Asset not found')
     return
   }
 
-  const { siteId, jobId } = req.params
-  const rest = (req.params as any)[0] as string // e.g. "img/5-1-1.png" or "bundle.css"
-  const storagePath = `${siteId}/${jobId}/${rest}`
-
+  // Local mode - serve from local storage
   try {
-    const { buffer, contentType } = await getStoredFileResponse(STORAGE_BUCKETS.RAW_HTML, storagePath)
-    res.setHeader('Content-Type', contentType)
+    const { buffer, contentType: localContentType } = await getStoredFileResponse(STORAGE_BUCKETS.RAW_HTML, storagePath)
+    res.setHeader('Content-Type', localContentType)
     res.setHeader('Cache-Control', 'public, max-age=86400')
     res.send(buffer)
   } catch {
     // Fallback: try sanitized-html bucket
     try {
-      const { buffer, contentType } = await getStoredFileResponse(STORAGE_BUCKETS.SANITIZED_HTML, storagePath)
-      res.setHeader('Content-Type', contentType)
+      const { buffer, contentType: localContentType } = await getStoredFileResponse(STORAGE_BUCKETS.SANITIZED_HTML, storagePath)
+      res.setHeader('Content-Type', localContentType)
       res.setHeader('Cache-Control', 'public, max-age=86400')
       res.send(buffer)
     } catch {
@@ -694,6 +761,13 @@ app.get('/api/storage/:bucket', async (req, res) => {
 // Extract: Create a crawl job
 // ============================================================
 app.post('/api/extract', async (req, res) => {
+  // Rate limit: max 10 extract requests per minute per IP
+  const clientIp = req.ip || 'unknown'
+  if (!rateLimit(`extract:${clientIp}`, 10, 60_000)) {
+    res.status(429).json({ error: 'Too many requests. Please try again later.' })
+    return
+  }
+
   const { url, genre, tags } = req.body
   if (!url || typeof url !== 'string' || !/^https?:\/\/.+/.test(url)) {
     res.status(400).json({ error: 'Valid URL (http/https) is required' })
@@ -726,7 +800,7 @@ app.post('/api/extract', async (req, res) => {
     res.json({ jobId: job.id, siteId: site.id, status: 'queued' })
   } catch (err: any) {
     logger.error('Extract job creation failed', { url, error: err.message })
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -734,12 +808,16 @@ app.post('/api/extract', async (req, res) => {
 // Job status
 // ============================================================
 app.get('/api/jobs/:id', async (req, res) => {
-  const job = await getJobRecord(req.params.id)
-  if (!job) {
-    res.status(404).json({ error: 'Job not found' })
-    return
+  try {
+    const job = await getJobRecord(req.params.id)
+    if (!job) {
+      res.status(404).json({ error: 'Job not found' })
+      return
+    }
+    res.json({ job })
+  } catch (err: any) {
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
-  res.json({ job })
 })
 
 // ============================================================
@@ -760,12 +838,12 @@ app.get('/api/jobs/:id/sections', async (req, res) => {
 
     res.json({ sections })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
 // ============================================================
-// Render: Serve section HTML + CSS bundle via <link>
+// Render: Serve section HTML with inlined CSS
 // ============================================================
 app.get('/api/sections/:sectionId/render', async (req, res) => {
   const { sectionId } = req.params
@@ -781,7 +859,8 @@ app.get('/api/sections/:sectionId/render', async (req, res) => {
       return
     }
 
-    const pageOrigin = record.page.url ? new URL(record.page.url).origin : ''
+    let pageOrigin = ''
+    try { if (record.page.url) pageOrigin = new URL(record.page.url).origin } catch {}
 
     // Prefer raw HTML (small, with clean /assets/ URLs)
     let storedHtml = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.section.raw_html_storage_path)
@@ -797,17 +876,38 @@ app.get('/api/sections/:sectionId/render', async (req, res) => {
     // Resolve any remaining relative URLs to absolute (instead of <base> which breaks /assets/ paths)
     storedHtml = resolveRelativeUrls(storedHtml, pageOrigin)
 
-    // Link to CSS bundle file instead of inlining (much smaller response)
-    const cssBundlePath = record.page.css_bundle_path
-    const cssLink = cssBundlePath ? `<link rel="stylesheet" href="/assets/${cssBundlePath}">` : ''
+    // Inline CSS content directly (the /assets/ link path doesn't resolve)
+    let cssContent = ''
+    if (record.page.css_bundle_path) {
+      cssContent = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.page.css_bundle_path)
+      if (!cssContent) {
+        cssContent = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.page.css_bundle_path)
+      }
+    }
+    // Rewrite relative font/image URLs in CSS to absolute /assets/ paths
+    if (cssContent && record.page.css_bundle_path) {
+      const assetBase = '/assets/' + record.page.css_bundle_path.replace(/\/[^/]+$/, '/')
+      cssContent = cssContent.replace(
+        /url\(\s*(['"]?)((?:(?!\1\)).)*?)\1\s*\)/gi,
+        (match, q, rawPath) => {
+          const trimmed = rawPath.trim()
+          // Skip data URIs, absolute URLs, already-prefixed paths
+          if (!trimmed || /^(data:|https?:\/\/|\/\/|\/assets\/)/i.test(trimmed)) {
+            return match
+          }
+          return `url(${q}${assetBase}${trimmed}${q})`
+        }
+      )
+    }
+    const cssStyle = cssContent ? `<style>${cssContent}</style>` : ''
 
-    const html = buildRenderDocument(storedHtml, pageOrigin, { extraHead: cssLink, skipBase: true })
+    const html = buildRenderDocument(storedHtml, pageOrigin, { extraHead: cssStyle, skipBase: true })
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache')
     res.send(html)
   } catch (err: any) {
-    res.status(500).send(err.message || 'Render failed')
+    res.status(500).send('Render failed')
   }
 })
 
@@ -852,7 +952,7 @@ app.get('/api/library', async (req, res) => {
       }))
     })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -863,7 +963,7 @@ app.get('/api/library/genres', async (req, res) => {
   try {
     res.json({ genres: await getGenreResults() })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -874,7 +974,7 @@ app.get('/api/library/families', async (req, res) => {
   try {
     res.json({ families: await getFamilyResults() })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -885,7 +985,7 @@ app.get('/api/block-variants', async (req, res) => {
   try {
     res.json({ variants: await getBlockVariantResults(typeof req.query.family === 'string' ? req.query.family : undefined) })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -908,7 +1008,7 @@ app.delete('/api/library/:id', async (req, res) => {
     await deleteSectionRecord(req.params.id)
     res.json({ ok: true })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -931,7 +1031,7 @@ app.get('/api/sections/:sectionId/dom', async (req, res) => {
       nodes: record.nodes || []
     })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -962,7 +1062,7 @@ app.get('/api/sections/:sectionId/html', async (req, res) => {
     const html = await readBucketText(STORAGE_BUCKETS.RAW_HTML, section.raw_html_storage_path)
     res.json({ html, storagePath: section.raw_html_storage_path })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -996,7 +1096,7 @@ app.put('/api/sections/:sectionId/html', async (req, res) => {
     }
     res.json({ ok: true })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1021,7 +1121,7 @@ app.delete('/api/sections/:sectionId', async (req, res) => {
     await deleteSectionRecord(sectionId)
     res.json({ ok: true })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1037,7 +1137,8 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
       return
     }
 
-    const pageOrigin = record.page.url ? new URL(record.page.url).origin : ''
+    let pageOrigin = ''
+    try { if (record.page.url) pageOrigin = new URL(record.page.url).origin } catch {}
 
     let sectionHtml = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.resolvedSnapshot.html_storage_path)
     if (!sectionHtml) {
@@ -1045,9 +1146,30 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
       return
     }
 
-    // CSS bundle via <link> (resolved inline HTMLの場合でもCSSは必要ない場合がある)
-    const cssBundlePath = record.page.css_bundle_path
-    const cssLink = cssBundlePath ? `<link rel="stylesheet" href="/assets/${cssBundlePath}">` : ''
+    // Inline CSS content directly (the /assets/ link path doesn't resolve)
+    let cssContent = ''
+    if (record.page.css_bundle_path) {
+      cssContent = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.page.css_bundle_path)
+      if (!cssContent) {
+        cssContent = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.page.css_bundle_path)
+      }
+    }
+    // Rewrite relative font/image URLs in CSS to absolute /assets/ paths
+    if (cssContent && record.page.css_bundle_path) {
+      const assetBase = '/assets/' + record.page.css_bundle_path.replace(/\/[^/]+$/, '/')
+      cssContent = cssContent.replace(
+        /url\(\s*(['"]?)((?:(?!\1\)).)*?)\1\s*\)/gi,
+        (match, q, rawPath) => {
+          const trimmed = rawPath.trim()
+          // Skip data URIs, absolute URLs, already-prefixed paths
+          if (!trimmed || /^(data:|https?:\/\/|\/\/|\/assets\/)/i.test(trimmed)) {
+            return match
+          }
+          return `url(${q}${assetBase}${trimmed}${q})`
+        }
+      )
+    }
+    const cssStyle = cssContent ? `<style>${cssContent}</style>` : ''
 
   // 編集UIとの通信用スクリプト
   const editorScript = `
@@ -1108,7 +1230,7 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
 
     const html = buildRenderDocument(sectionHtml, pageOrigin, {
       skipBase: true,
-      extraHead: `${cssLink}<style>
+      extraHead: `${cssStyle}<style>
   [data-pc-key] { cursor: pointer; transition: outline 0.15s; }
   [data-pc-key]:hover { outline: 2px solid rgba(59,130,246,0.4); }
   [data-pc-selected] { outline: 2px solid #3b82f6 !important; box-shadow: 0 0 0 4px rgba(59,130,246,0.15); }
@@ -1119,7 +1241,7 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
     res.send(html)
   } catch (err: any) {
-    res.status(500).send(err.message || 'Editable render failed')
+    res.status(500).send('Editable render failed')
   }
 })
 
@@ -1147,7 +1269,7 @@ app.post('/api/sections/:sectionId/patch-sets', async (req, res) => {
     }
     res.json({ patchSet })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1195,7 +1317,7 @@ app.post('/api/patch-sets/:patchSetId/patches', async (req, res) => {
     }
     res.json({ patches: created })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1212,7 +1334,7 @@ app.get('/api/patch-sets/:patchSetId', async (req, res) => {
     }
     res.json(record)
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 
@@ -1250,7 +1372,271 @@ app.post('/api/projects/:projectId/page-blocks', async (req, res) => {
     const block = await createProjectPageBlockRecord(record)
     res.json({ block })
   } catch (err: any) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+// ============================================================
+// Claude TSX conversion
+// ============================================================
+app.post('/api/sections/:sectionId/convert-tsx', async (req, res) => {
+  const { sectionId } = req.params
+  try {
+    const ctx = await getRenderContext(sectionId)
+    if (!ctx) {
+      res.status(404).json({ error: 'Section not found' })
+      return
+    }
+
+    // Get raw HTML
+    let html = await readBucketText(STORAGE_BUCKETS.RAW_HTML, ctx.section.raw_html_storage_path)
+    if (!html) {
+      html = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, ctx.section.sanitized_html_storage_path)
+    }
+    if (!html) {
+      res.status(404).json({ error: 'Section HTML not found' })
+      return
+    }
+
+    // Get block family for component naming
+    let blockFamily: string | undefined
+    if (HAS_SUPABASE) {
+      const { data } = await supabaseAdmin
+        .from('source_sections')
+        .select('block_family')
+        .eq('id', sectionId)
+        .single()
+      blockFamily = data?.block_family
+    } else {
+      const section = await getSection(sectionId)
+      blockFamily = section?.block_family
+    }
+
+    const tsx = await convertHtmlToTsx(html, blockFamily)
+    res.json({ tsx, blockFamily })
+  } catch (err: any) {
+    logger.error('TSX conversion failed', { sectionId, error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+// ============================================================
+// Get stored TSX code
+// ============================================================
+app.get('/api/sections/:sectionId/tsx', async (req, res) => {
+  const { sectionId } = req.params
+  try {
+    let tsxPath: string | undefined
+    let blockFamily: string | undefined
+
+    if (HAS_SUPABASE) {
+      const { data } = await supabaseAdmin
+        .from('source_sections')
+        .select('tsx_code_storage_path, block_family')
+        .eq('id', sectionId)
+        .single()
+      tsxPath = data?.tsx_code_storage_path
+      blockFamily = data?.block_family
+    } else {
+      const section = await getSection(sectionId)
+      tsxPath = section?.tsx_code_storage_path
+      blockFamily = section?.block_family
+    }
+
+    if (!tsxPath) {
+      res.status(404).json({ error: 'TSX not yet generated for this section' })
+      return
+    }
+
+    const tsx = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, tsxPath)
+    if (!tsx) {
+      res.status(404).json({ error: 'TSX file not found' })
+      return
+    }
+
+    res.json({ tsx, blockFamily })
+  } catch (err: any) {
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+// ============================================================
+// ZIP Export - combine canvas sections into a downloadable project
+// ============================================================
+app.post('/api/export/zip', async (req, res) => {
+  const { sectionIds } = req.body as { sectionIds: string[] }
+
+  if (!sectionIds || !Array.isArray(sectionIds) || sectionIds.length === 0) {
+    res.status(400).json({ error: 'sectionIds array required' })
+    return
+  }
+
+  try {
+    const components: { name: string; tsx: string; family: string }[] = []
+
+    for (let i = 0; i < sectionIds.length; i++) {
+      const sectionId = sectionIds[i]
+      let tsxPath: string | undefined
+      let blockFamily = 'section'
+
+      if (HAS_SUPABASE) {
+        const { data } = await supabaseAdmin
+          .from('source_sections')
+          .select('tsx_code_storage_path, block_family')
+          .eq('id', sectionId)
+          .single()
+        tsxPath = data?.tsx_code_storage_path
+        blockFamily = data?.block_family || 'section'
+      } else {
+        const section = await getSection(sectionId)
+        tsxPath = section?.tsx_code_storage_path
+        blockFamily = section?.block_family || 'section'
+      }
+
+      let tsx = ''
+      if (tsxPath) {
+        tsx = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, tsxPath)
+      }
+
+      if (!tsx) {
+        // Fallback: return raw HTML wrapped in a component
+        const ctx = await getRenderContext(sectionId)
+        const html = ctx
+          ? await readBucketText(STORAGE_BUCKETS.RAW_HTML, ctx.section.raw_html_storage_path)
+          : ''
+        const safeName = blockFamily.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join('')
+        tsx = `export default function ${safeName}Section${i}() {\n  return (\n    <div dangerouslySetInnerHTML={{ __html: \`${html.replace(/`/g, '\\`')}\` }} />\n  )\n}\n`
+      }
+
+      const componentName = blockFamily
+        .replace(/[^a-zA-Z0-9_]/g, '')
+        .split('_')
+        .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join('') + 'Section' + (i > 0 ? i : '')
+
+      components.push({ name: componentName, tsx, family: blockFamily })
+    }
+
+    // Generate App.tsx
+    const imports = components.map(c => `import ${c.name} from './components/${c.name}'`).join('\n')
+    const renders = components.map(c => `      <${c.name} />`).join('\n')
+    const appTsx = `import React from 'react'\n${imports}\n\nexport default function App() {\n  return (\n    <div>\n${renders}\n    </div>\n  )\n}\n`
+
+    // Generate index.tsx
+    const indexTsx = `import React from 'react'\nimport ReactDOM from 'react-dom/client'\nimport App from './App'\n\nReactDOM.createRoot(document.getElementById('root')!).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>\n)\n`
+
+    // Generate package.json
+    const pkgJson = JSON.stringify({
+      name: 'partcopy-export',
+      private: true,
+      version: '1.0.0',
+      type: 'module',
+      scripts: {
+        dev: 'vite',
+        build: 'tsc -b && vite build'
+      },
+      dependencies: {
+        react: '^18.3.1',
+        'react-dom': '^18.3.1'
+      },
+      devDependencies: {
+        '@types/react': '^18.3.12',
+        '@types/react-dom': '^18.3.1',
+        '@vitejs/plugin-react': '^4.3.4',
+        typescript: '^5.6.0',
+        vite: '^6.0.0'
+      }
+    }, null, 2)
+
+    // Generate index.html
+    const indexHtml = `<!DOCTYPE html>\n<html lang="ja">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>PARTCOPY Export</title>\n</head>\n<body>\n  <div id="root"></div>\n  <script type="module" src="/src/index.tsx"></script>\n</body>\n</html>\n`
+
+    // Build ZIP
+    res.setHeader('Content-Type', 'application/zip')
+    res.setHeader('Content-Disposition', 'attachment; filename="partcopy-export.zip"')
+
+    const archive = archiver('zip', { zlib: { level: 9 } })
+
+    archive.on('error', (archiveErr: Error) => {
+      logger.error('Archiver error mid-stream', { error: archiveErr.message })
+      if (!res.headersSent) {
+        res.status(500).json({ error: archiveErr.message })
+      } else {
+        res.end()
+      }
+    })
+
+    archive.pipe(res)
+
+    archive.append(indexHtml, { name: 'index.html' })
+    archive.append(pkgJson, { name: 'package.json' })
+    archive.append(appTsx, { name: 'src/App.tsx' })
+    archive.append(indexTsx, { name: 'src/index.tsx' })
+
+    for (const comp of components) {
+      archive.append(comp.tsx, { name: `src/components/${comp.name}.tsx` })
+    }
+
+    await archive.finalize()
+  } catch (err: any) {
+    logger.error('ZIP export failed', { error: err.message })
+    if (!res.headersSent) {
+      res.status(500).json({ error: safeErrorMessage(err) })
+    }
+  }
+})
+
+// ============================================================
+// Auto-Crawl Queue Management
+// ============================================================
+import {
+  getQueueStatus,
+  appendToQueue,
+  clearQueue,
+  startAutoCrawler,
+  isAutoCrawlActive
+} from './auto-crawler.js'
+
+app.get('/api/crawl-queue', async (_req, res) => {
+  try {
+    const status = await getQueueStatus()
+    res.json(status)
+  } catch (err: any) {
+    logger.error('Crawl queue status failed', { error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+app.post('/api/crawl-queue', async (req, res) => {
+  const { urls } = req.body
+  if (!Array.isArray(urls) || !urls.every((u: unknown) => typeof u === 'string')) {
+    res.status(400).json({ error: 'urls must be an array of strings' })
+    return
+  }
+
+  try {
+    const added = await appendToQueue(urls)
+
+    // Start auto-crawler if not already active
+    if (!isAutoCrawlActive() && added > 0) {
+      startAutoCrawler()
+    }
+
+    const status = await getQueueStatus()
+    res.json({ added, ...status })
+  } catch (err: any) {
+    logger.error('Crawl queue append failed', { error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+app.delete('/api/crawl-queue', async (_req, res) => {
+  try {
+    await clearQueue()
+    res.json({ cleared: true })
+  } catch (err: any) {
+    logger.error('Crawl queue clear failed', { error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 

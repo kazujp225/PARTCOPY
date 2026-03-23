@@ -104,7 +104,7 @@ export function CodeEditor({ sectionId, onClose, onSaved }: Props) {
   if (loading) {
     return (
       <div className="code-editor-loading">
-        Loading...
+        読み込み中...
       </div>
     )
   }
@@ -115,7 +115,7 @@ export function CodeEditor({ sectionId, onClose, onSaved }: Props) {
         {/* Header */}
         <div className="code-editor-header">
           <div className="code-editor-title">
-            HTML Editor
+            HTML 編集
             {dirty && <span className="code-editor-dirty">*未保存</span>}
           </div>
           <div className="code-editor-actions">

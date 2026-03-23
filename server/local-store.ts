@@ -33,6 +33,7 @@ interface CrawlRunRow extends JsonObject {
   worker_version?: string | null
   error_code?: string | null
   error_message?: string | null
+  status_detail?: string | null
   page_count: number
   section_count: number
   queued_at: string
@@ -68,6 +69,7 @@ interface SourceSectionRow extends JsonObject {
   raw_html_storage_path?: string
   sanitized_html_storage_path?: string
   thumbnail_storage_path?: string
+  tsx_code_storage_path?: string
   created_at: string
 }
 
@@ -530,6 +532,15 @@ export async function createSourceSection(input: Omit<SourceSectionRow, 'id' | '
     } as SourceSectionRow
     db.source_sections.push(row)
     return clone(row)
+  })
+}
+
+export async function updateSourceSection(sectionId: string, patch: Partial<SourceSectionRow>) {
+  return withWriteLock(async db => {
+    const idx = db.source_sections.findIndex((s: SourceSectionRow) => s.id === sectionId)
+    if (idx === -1) return null
+    Object.assign(db.source_sections[idx], patch)
+    return clone(db.source_sections[idx])
   })
 }
 

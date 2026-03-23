@@ -6,6 +6,7 @@ import { Canvas } from './components/Canvas'
 import { Preview } from './components/Preview'
 import { Library } from './components/Library'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { TsxModal } from './components/TsxModal'
 import './styles.css'
 
 type View = 'editor' | 'preview' | 'library'
@@ -31,6 +32,17 @@ export default function App() {
   const [jobStatus, setJobStatus] = useState<string | null>(null)
   const [view, setView] = useState<View>('editor')
   const pollRef = useRef<NodeJS.Timeout | null>(null)
+  const [tsxResult, setTsxResult] = useState<{ tsx: string; familyName?: string } | null>(null)
+  const [exporting, setExporting] = useState(false)
+
+  // Auto-crawl state
+  const [crawlQueueCount, setCrawlQueueCount] = useState(0)
+  const [crawlDoneCount, setCrawlDoneCount] = useState(0)
+  const [crawlActive, setCrawlActive] = useState(false)
+  const [crawlCurrentUrl, setCrawlCurrentUrl] = useState<string | null>(null)
+  const [crawlUrls, setCrawlUrls] = useState('')
+  const [crawlExpanded, setCrawlExpanded] = useState(false)
+  const [crawlSubmitting, setCrawlSubmitting] = useState(false)
 
   // Persist canvas to localStorage (debounced to avoid excessive writes)
   useEffect(() => {
@@ -73,6 +85,63 @@ export default function App() {
         .catch(() => {})
     })
   }, [])
+  // Poll crawl queue status (only when the auto-crawl section is expanded)
+  useEffect(() => {
+    if (!crawlExpanded) return
+
+    const fetchCrawlStatus = async () => {
+      try {
+        const res = await fetch('/api/crawl-queue')
+        if (res.ok) {
+          const data = await res.json()
+          setCrawlQueueCount(data.queue?.length || 0)
+          setCrawlDoneCount(data.done?.length || 0)
+          setCrawlActive(data.active || false)
+          setCrawlCurrentUrl(data.currentUrl || null)
+        }
+      } catch {
+        // Server likely down, ignore silently
+      }
+    }
+    fetchCrawlStatus()
+    const interval = setInterval(fetchCrawlStatus, 10_000)
+    return () => clearInterval(interval)
+  }, [crawlExpanded])
+
+  const handleCrawlSubmit = useCallback(async () => {
+    const urls = crawlUrls
+      .split('\n')
+      .map(u => u.trim())
+      .filter(u => u.length > 0)
+    if (urls.length === 0) return
+
+    setCrawlSubmitting(true)
+    try {
+      const res = await fetch('/api/crawl-queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setCrawlQueueCount(data.queue?.length || 0)
+        setCrawlDoneCount(data.done?.length || 0)
+        setCrawlActive(data.active || false)
+        setCrawlUrls('')
+      }
+    } catch {}
+    setCrawlSubmitting(false)
+  }, [crawlUrls])
+
+  const handleCrawlClear = useCallback(async () => {
+    try {
+      const res = await fetch('/api/crawl-queue', { method: 'DELETE' })
+      if (res.ok) {
+        setCrawlQueueCount(0)
+      }
+    } catch {}
+  }, [])
+
   const familyCount = new Set(sections.map(section => section.block_family)).size
   const sourceCount = new Set(
     sections
@@ -94,14 +163,19 @@ export default function App() {
     pollRef.current = setInterval(async () => {
       try {
         const res = await fetch(`/api/jobs/${jobId}`)
+        if (!res.ok) return // skip transient errors, will retry next interval
         const { job } = await res.json() as { job: CrawlJob }
-        setJobStatus(`${job.status}${job.section_count ? ` (${job.section_count} sections)` : ''}`)
+        if (!job) return
+        const detail = job.status_detail || ''
+        setJobStatus(`${job.status}${detail ? ` - ${detail}` : ''}${job.section_count ? ` (${job.section_count} sections)` : ''}`)
 
         if (job.status === 'done') {
           stopPolling()
           // Fetch sections
           const secRes = await fetch(`/api/jobs/${jobId}/sections`)
-          const { sections: secs } = await secRes.json()
+          if (!secRes.ok) { setLoading(false); setJobStatus(null); return }
+          const secData = await secRes.json()
+          const secs = secData.sections || []
           setSections(prev => {
             const seen = new Set(prev.map(section => section.id))
             const next = [...prev]
@@ -114,9 +188,14 @@ export default function App() {
           })
           setLoading(false)
           setJobStatus(null)
+          setView('editor') // 抽出完了後パーツ一覧に自動遷移
+          // パーツ一覧にスクロール
+          setTimeout(() => {
+            document.querySelector('.parts-panel')?.scrollIntoView({ behavior: 'smooth' })
+          }, 100)
         } else if (job.status === 'failed') {
           stopPolling()
-          setError(job.error_message || 'Crawl failed')
+          setError(job.error_message || '取得に失敗しました')
           setLoading(false)
           setJobStatus(null)
         }
@@ -129,7 +208,7 @@ export default function App() {
   const handleExtract = useCallback(async (url: string, genre: string, tags: string[]) => {
     setLoading(true)
     setError(null)
-    setJobStatus('queuing...')
+    setJobStatus('準備中...')
     try {
       const res = await fetch('/api/extract', {
         method: 'POST',
@@ -137,11 +216,15 @@ export default function App() {
         body: JSON.stringify({ url, genre, tags })
       })
       if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || 'Failed to create job')
+        let message = 'ジョブの作成に失敗しました'
+        try {
+          const data = await res.json()
+          message = data.error || message
+        } catch {}
+        throw new Error(message)
       }
       const { jobId } = await res.json()
-      setJobStatus('queued - waiting for worker...')
+      setJobStatus('処理待ち...')
       pollJob(jobId)
     } catch (err: any) {
       setError(err.message)
@@ -191,6 +274,49 @@ export default function App() {
     setCanvas(prev => prev.filter(c => c.sectionId !== sectionId))
   }, [])
 
+  const handleViewTsx = useCallback(async (sectionId: string) => {
+    try {
+      const res = await fetch(`/api/sections/${sectionId}/tsx`)
+      if (!res.ok) {
+        let message = 'TSXが見つかりません'
+        try {
+          const data = await res.json()
+          message = data.error || message
+        } catch {}
+        throw new Error(message)
+      }
+      const { tsx, blockFamily } = await res.json()
+      setTsxResult({ tsx, familyName: blockFamily })
+    } catch (err: any) {
+      alert(err.message)
+    }
+  }, [])
+
+  const handleExportZip = useCallback(async () => {
+    if (canvas.length === 0) return
+    setExporting(true)
+    try {
+      const sectionIds = canvas.map(c => c.sectionId)
+      const res = await fetch('/api/export/zip', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sectionIds })
+      })
+      if (!res.ok) throw new Error('ZIP出力に失敗しました')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'partcopy-export.zip'
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err: any) {
+      alert(err.message)
+    } finally {
+      setExporting(false)
+    }
+  }, [canvas])
+
   const canvasItems = canvas.map(c => ({
     canvas: c,
     section: sections.find(s => s.id === c.sectionId)!
@@ -202,17 +328,17 @@ export default function App() {
       <header className="app-header">
         <div className="app-logo">
           <h1>PARTCOPY</h1>
-          <span className="app-tagline">Site Genome OS</span>
+          <span className="app-tagline">サイト構造解析ツール</span>
         </div>
         <div className="app-actions">
           <button className={`view-btn ${view === 'editor' ? 'active' : ''}`} onClick={() => setView('editor')}>
-            Editor
+            編集
           </button>
           <button className={`view-btn ${view === 'library' ? 'active' : ''}`} onClick={() => setView('library')}>
-            Library
+            ライブラリ
           </button>
           <button className={`view-btn ${view === 'preview' ? 'active' : ''}`} onClick={() => setView('preview')}>
-            Preview
+            プレビュー
           </button>
         </div>
       </header>
@@ -237,19 +363,74 @@ export default function App() {
       </div>
 
       {view !== 'library' && (
+        <div className="auto-crawl-section">
+          <div className="auto-crawl-header" onClick={() => setCrawlExpanded(!crawlExpanded)}>
+            <span className="auto-crawl-toggle">{crawlExpanded ? '\u25BC' : '\u25B6'}</span>
+            <span className="auto-crawl-title">自動取得</span>
+            <span className={`auto-crawl-status ${crawlActive ? 'active' : 'idle'}`}>
+              {crawlActive ? '実行中' : '待機中'}
+            </span>
+            <span className="auto-crawl-counts">
+              待ち: {crawlQueueCount} | 完了: {crawlDoneCount}
+            </span>
+          </div>
+          {crawlExpanded && (
+            <div className="auto-crawl-body">
+              {crawlActive && crawlCurrentUrl && (
+                <div className="auto-crawl-current">
+                  処理中: <code>{crawlCurrentUrl}</code>
+                </div>
+              )}
+              <textarea
+                className="auto-crawl-textarea"
+                placeholder="URLを貼り付けてください（1行に1つ）..."
+                value={crawlUrls}
+                onChange={e => setCrawlUrls(e.target.value)}
+                rows={4}
+              />
+              <div className="auto-crawl-actions">
+                <button
+                  className="auto-crawl-btn start"
+                  onClick={handleCrawlSubmit}
+                  disabled={crawlSubmitting || !crawlUrls.trim()}
+                >
+                  {crawlSubmitting ? '追加中...' : 'キューに追加'}
+                </button>
+                <button
+                  className="auto-crawl-btn clear"
+                  onClick={handleCrawlClear}
+                  disabled={crawlQueueCount === 0}
+                >
+                  キューをクリア
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {view !== 'library' && (
         <URLInput onSubmit={handleExtract} loading={loading} error={error} jobStatus={jobStatus} />
       )}
 
       {view === 'editor' && (
         <div className="editor-layout">
-          <PartsPanel sections={sections} onAdd={addToCanvas} onRemove={removeSection} />
-          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} />
+          <PartsPanel sections={sections} onAdd={addToCanvas} onRemove={removeSection} onViewTsx={handleViewTsx} />
+          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onExportZip={handleExportZip} exporting={exporting} />
         </div>
       )}
 
       {view === 'preview' && <Preview items={canvasItems} />}
 
       {view === 'library' && <Library onAddToCanvas={addSavedToCanvas} />}
+
+      {tsxResult && (
+        <TsxModal
+          tsx={tsxResult.tsx}
+          familyName={tsxResult.familyName}
+          onClose={() => setTsxResult(null)}
+        />
+      )}
       </ErrorBoundary>
     </div>
   )
