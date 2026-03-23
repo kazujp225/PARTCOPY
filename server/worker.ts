@@ -24,7 +24,7 @@ import {
   updateSourceSite,
   writeStoredFile
 } from './local-store.js'
-import { convertHtmlToTsx } from './claude-converter.js'
+// TSX変換はZIPエクスポート時にオンデマンド実行（server/index.ts）
 import { HAS_SUPABASE, supabaseAdmin } from './supabase.js'
 import { STORAGE_BUCKETS } from './storage-config.js'
 import { launchBrowser } from './capture-runner.js'
@@ -419,7 +419,7 @@ async function processJob(job: any) {
 
     // ========== Phase 4: Classify + Store each section ==========
     let sectionCount = 0
-    const tsxTasks: Array<{ sectionId: string; html: string; family: string; index: number }> = []
+    // TSX変換はZIPエクスポート時にオンデマンドで実行
 
     for (const section of sections) {
       await setCrawlRunStatus(job.id, { status_detail: `セクション ${section.index + 1}/${sections.length} 処理中` })
@@ -560,9 +560,6 @@ async function processJob(job: any) {
         }
       }
 
-      // Collect task info for background TSX conversion (Phase 6)
-      tsxTasks.push({ sectionId: sectionRow.id, html: sectionHtml, family: classification.type, index: section.index })
-
       sectionCount++
     }
 
@@ -577,42 +574,7 @@ async function processJob(job: any) {
     await markSiteAnalyzed(site.id)
 
     logger.info('Job completed', { jobId: job.id, siteId: site.id, url, sectionCount, assetCount: dl.allAssets.length })
-
-    // ========== Phase 6: Background TSX Conversion (非同期・次ジョブをブロックしない) ==========
-    if (tsxTasks.length > 0) {
-      logger.info('Phase 6: Starting background TSX conversion (fire-and-forget)', { jobId: job.id, taskCount: tsxTasks.length })
-      // awaitしない — バックグラウンドで実行し、workerはすぐ次のジョブへ
-      ;(async () => {
-      try {
-      await setCrawlRunStatus(job.id, { status_detail: 'TSX変換中...' })
-
-      const BATCH_SIZE = 5
-      for (let i = 0; i < tsxTasks.length; i += BATCH_SIZE) {
-        await setCrawlRunStatus(job.id, { status_detail: `TSX変換中 (Claude) ${Math.min(i + BATCH_SIZE, tsxTasks.length)}/${tsxTasks.length}` })
-        const batch = tsxTasks.slice(i, i + BATCH_SIZE)
-        await Promise.allSettled(batch.map(async (task) => {
-          try {
-            const tsx = await convertHtmlToTsx(task.html, task.family)
-            const tsxPath = `${site.id}/${job.id}/component_${task.index}.tsx`
-            await uploadBuffer(STORAGE_BUCKETS.SANITIZED_HTML, tsxPath, tsx, 'text/plain')
-            // update DB
-            if (!HAS_SUPABASE) {
-              await updateSourceSection(task.sectionId, { tsx_code_storage_path: tsxPath })
-            } else {
-              await supabaseAdmin.from('source_sections').update({ tsx_code_storage_path: tsxPath }).eq('id', task.sectionId)
-            }
-          } catch (err: any) {
-            logger.warn('TSX conversion failed', { sectionId: task.sectionId, error: err.message })
-          }
-        }))
-      }
-
-      logger.info('Phase 6: TSX conversion complete', { jobId: job.id, taskCount: tsxTasks.length })
-      } catch (tsxBatchErr: any) {
-        logger.error('Phase 6: batch error', { jobId: job.id, error: tsxBatchErr.message })
-      }
-      })() // fire-and-forget
-    }
+    // TSX変換はZIPエクスポート時にオンデマンドで実行
 
   } catch (err: any) {
     const retryCount = Number(job.retry_count) || 0
