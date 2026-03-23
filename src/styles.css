@@ -3150,3 +3150,23 @@ body {
 }
 
 .canvas-new-btn:hover { background: #1d4ed8; }
+
+.part-thumbnail-img {
+  width: 100%;
+  height: auto;
+  max-height: 100px;
+  object-fit: cover;
+  object-position: top center;
+  display: block;
+}
+
+.part-thumbnail-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 60px;
+  background: var(--surface2);
+  color: var(--text3);
+  font-size: 12px;
+  font-weight: 500;
+}

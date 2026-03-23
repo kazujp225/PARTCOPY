@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback } from 'react'
 import { SourceSection } from '../types'
-import { SourcePreviewFrame } from './SourcePreviewFrame'
+// サムネイル画像を使用（iframeより軽量）
 import { FAMILY_COLORS } from '../constants'
 
 const FAMILY_LABELS: Record<string, string> = {
@@ -187,7 +187,18 @@ export function PartsPanel({ sections, onAdd, onRemove, onViewTsx }: Props) {
             onMouseLeave={() => setHoveredId(null)}
           >
             <div className="part-thumbnail-wrap">
-              <SourcePreviewFrame htmlUrl={section.htmlUrl} maxHeight={300} scale={0.45} />
+              {section.thumbnail_storage_path ? (
+                <img
+                  className="part-thumbnail-img"
+                  src={`/assets/${section.thumbnail_storage_path}`}
+                  alt={section.block_family}
+                  loading="lazy"
+                />
+              ) : (
+                <div className="part-thumbnail-placeholder">
+                  <span>{FAMILY_LABELS[section.block_family] || section.block_family}</span>
+                </div>
+              )}
               <div className="part-overlay-top">
                 <span className="part-type-badge" style={{ background: FAMILY_COLORS[section.block_family] || '#94a3b8' }}>
                   {FAMILY_LABELS[section.block_family] || section.block_family}
