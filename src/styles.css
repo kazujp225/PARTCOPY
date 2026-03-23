@@ -2176,3 +2176,40 @@ body {
   background: #059669;
   transform: scale(1.02);
 }
+
+.terminal-results {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.terminal-result-line {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.8;
+  color: #8b949e;
+  opacity: 0;
+  animation: terminal-type 0.3s ease forwards;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.result-family {
+  color: #58a6ff;
+  min-width: 100px;
+}
+
+.result-domain {
+  color: #c9d1d9;
+}
+
+.result-tsx {
+  padding: 1px 5px;
+  background: #10b981;
+  color: #fff;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+}

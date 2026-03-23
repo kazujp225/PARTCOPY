@@ -460,9 +460,21 @@ export default function App() {
                 </div>
               )}
               {!jobStatus && sections.length > 0 && (
-                <div className="terminal-done">
-                  <span>✓ 抽出完了 — {sections.length} パーツ</span>
-                </div>
+                <>
+                  <div className="terminal-done">
+                    <span>✓ 抽出完了 — {sections.length} パーツ取得</span>
+                  </div>
+                  <div className="terminal-results">
+                    {sections.slice(-10).map((s, i) => (
+                      <div key={s.id} className="terminal-result-line" style={{ animationDelay: `${i * 0.15}s` }}>
+                        <span className="terminal-prompt">→</span>
+                        <span className="result-family">[{s.block_family}]</span>
+                        <span className="result-domain">{s.source_sites?.normalized_domain || ''}</span>
+                        {s.tsx_code_storage_path && <span className="result-tsx">TSX</span>}
+                      </div>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
             {!jobStatus && sections.length > 0 && (
