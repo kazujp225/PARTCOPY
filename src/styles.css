@@ -258,6 +258,16 @@ body {
   background: var(--primary-hover);
 }
 
+.auto-crawl-btn.run {
+  background: #2563eb;
+  color: white;
+  font-weight: 700;
+}
+
+.auto-crawl-btn.run:hover {
+  background: #1d4ed8;
+}
+
 .auto-crawl-btn.clear {
   background: var(--surface);
   color: var(--text2);

@@ -519,6 +519,19 @@ export default function App() {
                 rows={4}
               />
               <div className="auto-crawl-actions">
+                {crawlQueueCount > 0 && !crawlActive && (
+                  <button
+                    className="auto-crawl-btn run"
+                    onClick={async () => {
+                      try {
+                        const res = await fetch('/api/crawl-queue/start', { method: 'POST' })
+                        if (res.ok) setCrawlActive(true)
+                      } catch {}
+                    }}
+                  >
+                    ▶ 待ち{crawlQueueCount}件を実行
+                  </button>
+                )}
                 <button
                   className="auto-crawl-btn start"
                   onClick={handleCrawlSubmit}

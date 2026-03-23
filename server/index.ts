@@ -1842,6 +1842,18 @@ app.post('/api/keyword-search', async (req, res) => {
   }
 })
 
+app.post('/api/crawl-queue/start', async (_req, res) => {
+  try {
+    if (!isAutoCrawlActive()) {
+      startAutoCrawler()
+    }
+    const status = await getQueueStatus()
+    res.json({ started: true, ...status })
+  } catch (err: any) {
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
 app.delete('/api/crawl-queue', async (_req, res) => {
   try {
     await clearQueue()
