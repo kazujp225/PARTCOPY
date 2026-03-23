@@ -11,9 +11,9 @@ import { logger } from './logger.js'
 
 const QUEUE_FILE = path.resolve(process.cwd(), '.partcopy/crawl-queue.txt')
 const DONE_FILE = path.resolve(process.cwd(), '.partcopy/crawl-done.txt')
-const CHECK_INTERVAL = 5 * 60 * 1000 // 5 minutes
-const MIN_DELAY = 30_000 // 30 seconds
-const MAX_DELAY = 90_000 // 90 seconds
+const CHECK_INTERVAL = 30_000 // 30秒ごとにキューをチェック
+const MIN_DELAY = 10_000 // 10秒
+const MAX_DELAY = 30_000 // 30秒
 const API_PORT = Number(process.env.PARTCOPY_API_PORT || 3002)
 const API_BASE = `http://127.0.0.1:${API_PORT}`
 
@@ -204,13 +204,9 @@ async function checkAndProcess(): Promise<void> {
 }
 
 /**
- * Start the auto-crawler. Only starts if the queue file exists.
+ * Start the auto-crawler. Periodically checks for queued URLs.
  */
 export function startAutoCrawler(): void {
-  if (!existsSync(QUEUE_FILE)) {
-    logger.info('Auto-crawl: queue file not found, auto-crawler not started', { path: QUEUE_FILE })
-    return
-  }
 
   stopped = false
   logger.info('Auto-crawl: starting auto-crawler', { checkIntervalMs: CHECK_INTERVAL })
