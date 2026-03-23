@@ -399,7 +399,20 @@ export default function App() {
             </span>
             <span className="auto-crawl-counts">
               待ち: {crawlQueueCount} | 完了: {crawlDoneCount}
+              {(crawlQueueCount + crawlDoneCount) > 0 && (
+                <span className="auto-crawl-percent">
+                  {' '}({Math.round((crawlDoneCount / (crawlQueueCount + crawlDoneCount)) * 100)}%)
+                </span>
+              )}
             </span>
+            {crawlActive && (crawlQueueCount + crawlDoneCount) > 0 && (
+              <div className="auto-crawl-progress-bar">
+                <div
+                  className="auto-crawl-progress-fill"
+                  style={{ width: `${Math.round((crawlDoneCount / (crawlQueueCount + crawlDoneCount)) * 100)}%` }}
+                />
+              </div>
+            )}
           </div>
           {crawlExpanded && (
             <div className="auto-crawl-body">
