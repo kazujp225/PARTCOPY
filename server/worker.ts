@@ -578,10 +578,13 @@ async function processJob(job: any) {
 
     logger.info('Job completed', { jobId: job.id, siteId: site.id, url, sectionCount, assetCount: dl.allAssets.length })
 
-    // ========== Phase 6: Background TSX Conversion ==========
+    // ========== Phase 6: Background TSX Conversion (非同期・次ジョブをブロックしない) ==========
     if (tsxTasks.length > 0) {
+      logger.info('Phase 6: Starting background TSX conversion (fire-and-forget)', { jobId: job.id, taskCount: tsxTasks.length })
+      // awaitしない — バックグラウンドで実行し、workerはすぐ次のジョブへ
+      ;(async () => {
+      try {
       await setCrawlRunStatus(job.id, { status_detail: 'TSX変換中...' })
-      logger.info('Phase 6: Starting background TSX conversion', { jobId: job.id, taskCount: tsxTasks.length })
 
       const BATCH_SIZE = 5
       for (let i = 0; i < tsxTasks.length; i += BATCH_SIZE) {
@@ -605,6 +608,10 @@ async function processJob(job: any) {
       }
 
       logger.info('Phase 6: TSX conversion complete', { jobId: job.id, taskCount: tsxTasks.length })
+      } catch (tsxBatchErr: any) {
+        logger.error('Phase 6: batch error', { jobId: job.id, error: tsxBatchErr.message })
+      }
+      })() // fire-and-forget
     }
 
   } catch (err: any) {
