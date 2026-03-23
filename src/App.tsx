@@ -54,11 +54,19 @@ export default function App() {
   const [newProjectName, setNewProjectName] = useState('')
   const [showNewProject, setShowNewProject] = useState(false)
 
-  // Persist canvas to localStorage (debounced to avoid excessive writes)
+  // Persist canvas to localStorage + Supabase project (debounced)
   useEffect(() => {
     const timer = setTimeout(() => {
       localStorage.setItem(CANVAS_STORAGE_KEY, JSON.stringify({ version: CANVAS_STORAGE_VERSION, canvas }))
-    }, 300)
+      // プロジェクトが選択されていれば自動保存
+      if (activeProjectId) {
+        fetch(`/api/projects/${activeProjectId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ canvas_json: canvas })
+        }).catch(() => {})
+      }
+    }, 500)
     return () => clearTimeout(timer)
   }, [canvas])
 
