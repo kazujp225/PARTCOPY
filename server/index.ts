@@ -365,7 +365,8 @@ async function getLibraryResults(filters: {
   let query = supabaseAdmin
     .from('source_sections')
     .select('*, source_sites!inner(normalized_domain, genre, tags, industry), source_pages(url, title)')
-    .limit(Math.max(filters.limit * 3, 180))
+    .order('created_at', { ascending: false })
+    .limit(Math.max(filters.limit * 3, 500))
 
   if (filters.genre) query = query.eq('source_sites.genre', filters.genre)
   if (filters.family) query = query.eq('block_family', filters.family)
