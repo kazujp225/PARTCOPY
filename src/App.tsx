@@ -81,8 +81,8 @@ export default function App() {
   useEffect(() => {
     if (!crawlActive) { setCrawlStep(1); return }
     const interval = setInterval(() => {
-      setCrawlStep(prev => prev >= 4 ? 1 : prev + 1)
-    }, 8000)
+      setCrawlStep(prev => prev >= 3 ? 1 : prev + 1)
+    }, 6000)
     return () => clearInterval(interval)
   }, [crawlActive])
 
@@ -499,7 +499,7 @@ export default function App() {
                   <div className="auto-crawl-url">処理中: <code>{crawlCurrentUrl}</code></div>
                   <div className="auto-crawl-steps">
                     <div className={`crawl-step ${crawlStep >= 1 ? (crawlStep === 1 ? 'active' : 'done') : ''}`}>
-                      <span className="crawl-step-icon">{crawlStep > 1 ? '●' : crawlStep === 1 ? '●' : '○'}</span>
+                      <span className="crawl-step-icon">{crawlStep > 1 ? '●' : '●'}</span>
                       <div className="crawl-step-detail">
                         <strong>1. サイトをダウンロード</strong>
                         <span>HTML・CSS・画像・フォントを取得中</span>
@@ -512,18 +512,11 @@ export default function App() {
                         <span>ヘッダー・ヒーロー・料金表などに自動分割</span>
                       </div>
                     </div>
-                    <div className={`crawl-step ${crawlStep >= 3 ? (crawlStep === 3 ? 'active' : 'done') : ''}`}>
-                      <span className="crawl-step-icon">{crawlStep > 3 ? '●' : crawlStep === 3 ? '●' : '○'}</span>
+                    <div className={`crawl-step ${crawlStep === 3 ? 'active' : ''}`}>
+                      <span className="crawl-step-icon">{crawlStep === 3 ? '●' : '○'}</span>
                       <div className="crawl-step-detail">
-                        <strong>3. TSXに変換</strong>
-                        <span>Claudeがデザインを保ったままコード化</span>
-                      </div>
-                    </div>
-                    <div className={`crawl-step ${crawlStep === 4 ? 'active' : ''}`}>
-                      <span className="crawl-step-icon">{crawlStep === 4 ? '●' : '○'}</span>
-                      <div className="crawl-step-detail">
-                        <strong>4. ライブラリに保存</strong>
-                        <span>次のURLへ自動で進みます</span>
+                        <strong>3. ライブラリに保存</strong>
+                        <span>TSX変換はZIPエクスポート時に実行されます</span>
                       </div>
                     </div>
                   </div>
