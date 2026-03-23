@@ -115,17 +115,9 @@ export async function searchAndQueue(keyword: string): Promise<{
   const uniqueUrls = [...allUrls]
   logger.info('URLs collected', { keyword, totalUrls: uniqueUrls.length })
 
-  // Step 3: クロールキューに追加
-  const queued = await appendToQueue(uniqueUrls)
-
-  // Auto-crawlerを開始
-  if (!isAutoCrawlActive() && queued > 0) {
-    startAutoCrawler()
-  }
-
+  // URLリストを返す（キューへの追加はフロントで選択後に行う）
   return {
     expandedKeywords,
-    urls: uniqueUrls,
-    queued
+    urls: uniqueUrls
   }
 }
