@@ -29,7 +29,7 @@ const CONVERT_PROMPT = `あなたはHTML→React TSXコンバーターです。
 HTML:
 `
 
-const MAX_HTML_INPUT_CHARS = 50_000
+const MAX_HTML_INPUT_CHARS = 200_000
 
 export async function convertHtmlToTsx(html: string, blockFamily?: string): Promise<string> {
   const componentName = blockFamily
