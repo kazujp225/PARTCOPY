@@ -1785,7 +1785,6 @@ import {
   getQueueStatus,
   appendToQueue,
   clearQueue,
-  startAutoCrawler,
   isAutoCrawlActive
 } from './auto-crawler.js'
 
@@ -1809,11 +1808,7 @@ app.post('/api/crawl-queue', async (req, res) => {
   try {
     const added = await appendToQueue(urls)
 
-    // Start auto-crawler if not already active
-    if (!isAutoCrawlActive() && added > 0) {
-      startAutoCrawler()
-    }
-
+    // workerプロセスのauto-crawlerが30秒ごとにキューをチェック
     const status = await getQueueStatus()
     res.json({ added, ...status })
   } catch (err: any) {
@@ -1844,9 +1839,7 @@ app.post('/api/keyword-search', async (req, res) => {
 
 app.post('/api/crawl-queue/start', async (_req, res) => {
   try {
-    if (!isAutoCrawlActive()) {
-      startAutoCrawler()
-    }
+    // workerプロセスのauto-crawlerが30秒以内にキューを拾う
     const status = await getQueueStatus()
     res.json({ started: true, ...status })
   } catch (err: any) {
