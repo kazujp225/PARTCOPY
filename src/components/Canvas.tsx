@@ -19,9 +19,10 @@ interface Props {
   onExportZip?: () => void
   exporting?: boolean
   onSaveProject?: () => void
+  onNewProject?: () => void
 }
 
-export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, exporting, onSaveProject }: Props) {
+export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, exporting, onSaveProject, onNewProject }: Props) {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const dragRef = useRef<number | null>(null)
@@ -68,6 +69,11 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
           <div className="canvas-empty-icon" style={{ fontSize: '3rem' }}>&oplus;</div>
           <h3 style={{ fontSize: '1.25rem', margin: '0.75rem 0 0.5rem' }}>パーツを追加してページを組み立てよう</h3>
           <p style={{ fontSize: '0.95rem' }}>左のパネルからパーツを追加してください</p>
+          {onNewProject && (
+            <button className="canvas-new-btn" onClick={onNewProject} style={{ marginTop: '16px' }}>
+              + 新規プロジェクト作成
+            </button>
+          )}
         </div>
       </main>
     )
@@ -79,6 +85,9 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
         <div className="canvas-header">
           <h2>Canvas ({items.length} ブロック)</h2>
           <div className="canvas-header-actions">
+            {onNewProject && (
+              <button className="canvas-new-btn" onClick={onNewProject}>+ 新規作成</button>
+            )}
             {onSaveProject && (
               <button className="save-project-btn" onClick={onSaveProject}>保存</button>
             )}
