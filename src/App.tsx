@@ -554,6 +554,11 @@ export default function App() {
                   {jobStatus}
                 </div>
               )}
+              {jobStatus && (
+                <button className="terminal-cancel-btn" onClick={() => { stopPolling(); setLoading(false); setJobStatus(null) }}>
+                  中断する
+                </button>
+              )}
               {!jobStatus && sections.length > 0 && (
                 <>
                   <div className="terminal-done">
