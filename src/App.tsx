@@ -14,6 +14,26 @@ type View = 'dashboard' | 'editor' | 'preview' | 'library'
 
 const CANVAS_STORAGE_KEY = 'partcopy:canvas'
 const CANVAS_STORAGE_VERSION = 1
+const PROJECTS_KEY = 'partcopy:projects'
+const ACTIVE_PROJECT_KEY = 'partcopy:activeProject'
+
+interface Project {
+  id: string
+  name: string
+  canvas: CanvasBlock[]
+  createdAt: string
+}
+
+function loadProjects(): Project[] {
+  try {
+    const raw = localStorage.getItem(PROJECTS_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch { return [] }
+}
+
+function saveProjects(projects: Project[]) {
+  localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects))
+}
 
 function loadCanvasFromStorage(): CanvasBlock[] {
   try {
@@ -35,6 +55,8 @@ export default function App() {
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const [tsxResult, setTsxResult] = useState<{ tsx: string; familyName?: string } | null>(null)
   const [exporting, setExporting] = useState(false)
+  const [projects, setProjects] = useState<Project[]>(loadProjects)
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => localStorage.getItem(ACTIVE_PROJECT_KEY))
 
   // Auto-crawl state
   const [crawlQueueCount, setCrawlQueueCount] = useState(0)
@@ -353,6 +375,52 @@ export default function App() {
     }
   }, [canvas])
 
+  const handleNewProject = useCallback((name: string) => {
+    const project: Project = {
+      id: crypto.randomUUID(),
+      name,
+      canvas: [],
+      createdAt: new Date().toISOString()
+    }
+    const updated = [...projects, project]
+    setProjects(updated)
+    saveProjects(updated)
+    setActiveProjectId(project.id)
+    localStorage.setItem(ACTIVE_PROJECT_KEY, project.id)
+    setCanvas([])
+  }, [projects])
+
+  const handleSwitchProject = useCallback((projectId: string) => {
+    // 現在のCanvasを保存
+    if (activeProjectId) {
+      const updated = projects.map(p =>
+        p.id === activeProjectId ? { ...p, canvas } : p
+      )
+      setProjects(updated)
+      saveProjects(updated)
+    }
+    // 切り替え
+    const target = projects.find(p => p.id === projectId)
+    if (target) {
+      setCanvas(target.canvas)
+      setActiveProjectId(projectId)
+      localStorage.setItem(ACTIVE_PROJECT_KEY, projectId)
+    }
+  }, [projects, activeProjectId, canvas])
+
+  const handleDeleteProject = useCallback((projectId: string) => {
+    const updated = projects.filter(p => p.id !== projectId)
+    setProjects(updated)
+    saveProjects(updated)
+    if (activeProjectId === projectId) {
+      setActiveProjectId(null)
+      localStorage.removeItem(ACTIVE_PROJECT_KEY)
+      setCanvas([])
+    }
+  }, [projects, activeProjectId])
+
+  const activeProjectName = projects.find(p => p.id === activeProjectId)?.name || '未選択'
+
   const canvasItems = canvas.map(c => ({
     canvas: c,
     section: sections.find(s => s.id === c.sectionId)!
@@ -381,6 +449,33 @@ export default function App() {
             プレビュー
           </button>
         </nav>
+        <div className="sidebar-projects">
+          <span className="sidebar-nav-label">プロジェクト</span>
+          <div className="sidebar-project-active">
+            {activeProjectName}
+          </div>
+          {projects.map(p => (
+            <button
+              key={p.id}
+              className={`sidebar-project-btn ${p.id === activeProjectId ? 'active' : ''}`}
+              onClick={() => handleSwitchProject(p.id)}
+            >
+              <span>{p.name}</span>
+              {p.id !== activeProjectId && (
+                <span className="sidebar-project-delete" onClick={e => { e.stopPropagation(); handleDeleteProject(p.id) }}>×</span>
+              )}
+            </button>
+          ))}
+          <button
+            className="sidebar-project-new"
+            onClick={() => {
+              const name = prompt('プロジェクト名を入力')
+              if (name?.trim()) handleNewProject(name.trim())
+            }}
+          >
+            + 新規プロジェクト
+          </button>
+        </div>
         <div className="sidebar-stats">
           <div className="sidebar-stat">パーツ <strong>{sections.length}</strong></div>
           <div className="sidebar-stat">サイト <strong>{sourceCount}</strong></div>
