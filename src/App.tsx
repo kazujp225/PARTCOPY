@@ -7,9 +7,10 @@ import { Preview } from './components/Preview'
 import { Library } from './components/Library'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { TsxModal } from './components/TsxModal'
+import { Dashboard } from './components/Dashboard'
 import './styles.css'
 
-type View = 'editor' | 'preview' | 'library'
+type View = 'dashboard' | 'editor' | 'preview' | 'library'
 
 const CANVAS_STORAGE_KEY = 'partcopy:canvas'
 const CANVAS_STORAGE_VERSION = 1
@@ -30,7 +31,7 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<string | null>(null)
-  const [view, setView] = useState<View>('editor')
+  const [view, setView] = useState<View>('dashboard')
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const [tsxResult, setTsxResult] = useState<{ tsx: string; familyName?: string } | null>(null)
   const [exporting, setExporting] = useState(false)
@@ -367,6 +368,9 @@ export default function App() {
           <span className="app-tagline">サイト構造解析ツール</span>
         </div>
         <div className="app-actions">
+          <button className={`view-btn ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>
+            ダッシュボード
+          </button>
           <button className={`view-btn ${view === 'editor' ? 'active' : ''}`} onClick={() => setView('editor')}>
             編集
           </button>
@@ -385,11 +389,11 @@ export default function App() {
         </div>
       </header>
 
-      {view !== 'library' && (
+      {view !== 'library' && view !== 'dashboard' && (
         <URLInput onSubmit={handleExtract} loading={loading} error={error} jobStatus={jobStatus} />
       )}
 
-      {view !== 'library' && (
+      {view !== 'library' && view !== 'dashboard' && (
         <div className="auto-crawl-section">
           <div className="auto-crawl-header" onClick={() => setCrawlExpanded(!crawlExpanded)}>
             <span className="auto-crawl-toggle">{crawlExpanded ? '\u25BC' : '\u25B6'}</span>
@@ -567,6 +571,8 @@ export default function App() {
           )}
         </div>
       )}
+
+      {view === 'dashboard' && <Dashboard sections={sections} canvas={canvas} />}
 
       {view === 'editor' && (
         <div className="editor-layout">
