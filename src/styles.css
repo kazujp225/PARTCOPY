@@ -688,9 +688,46 @@ body {
 }
 
 .parts-header h2 {
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 20px;
+  font-weight: 800;
   color: var(--text);
+  line-height: 1;
+}
+
+.parts-header-unit {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text3);
+}
+
+.parts-header-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.parts-filter-toggle {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text3);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.parts-filter-toggle:hover { background: var(--surface2); }
+.parts-filter-toggle.active {
+  background: #eff6ff;
+  color: #2563eb;
+  border-color: #2563eb;
+}
+
+.parts-filters-panel {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
 
 .parts-results-count {

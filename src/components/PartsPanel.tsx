@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useCallback } from 'react'
 import { SourceSection } from '../types'
 import { SourcePreviewFrame } from './SourcePreviewFrame'
 import { FAMILY_COLORS } from '../constants'
@@ -41,6 +41,7 @@ export function PartsPanel({ sections, onAdd, onRemove, onViewTsx }: Props) {
   const [onlyCta, setOnlyCta] = useState(false)
   const [onlyForm, setOnlyForm] = useState(false)
   const [onlyImages, setOnlyImages] = useState(false)
+  const [filtersExpanded, setFiltersExpanded] = useState(false)
 
   const familyCounts = sections.reduce<Record<string, number>>((acc, section) => {
     const family = section.block_family || 'content'
@@ -111,61 +112,59 @@ export function PartsPanel({ sections, onAdd, onRemove, onViewTsx }: Props) {
     <aside className="parts-panel">
       <div className="parts-header">
         <div className="parts-header-row">
-          <h2>{sections.length}件のパーツ</h2>
-          <span className="parts-results-count">{filtered.length}件表示</span>
-        </div>
-        <div className="parts-management-bar">
-          <input
-            type="search"
-            className="parts-search-input"
-            value={query}
-            onChange={event => setQuery(event.target.value)}
-            placeholder="検索: 種別 / ドメイン / 概要"
-          />
-          <select
-            className="parts-select"
-            value={sortBy}
-            onChange={event => setSortBy(event.target.value as SortOption)}
-          >
-            <option value="position">抽出順</option>
-            <option value="confidence">信頼度順</option>
-            <option value="family">種別順</option>
-            <option value="source">サイト順</option>
-          </select>
-        </div>
-        <div className="parts-toggle-row">
-          <button className={`feature-toggle pill ${onlyImages ? 'active' : ''}`} onClick={() => setOnlyImages(prev => !prev)}>
-            IMG
-          </button>
-          <button className={`feature-toggle pill ${onlyCta ? 'active' : ''}`} onClick={() => setOnlyCta(prev => !prev)}>
-            CTA
-          </button>
-          <button className={`feature-toggle pill ${onlyForm ? 'active' : ''}`} onClick={() => setOnlyForm(prev => !prev)}>
-            FORM
-          </button>
-          {hasActiveFilters && (
-            <button className="inline-reset-btn" onClick={resetControls}>
-              リセット
+          <h2>{filtered.length}<span className="parts-header-unit">/{sections.length}</span></h2>
+          <div className="parts-header-actions">
+            <button
+              className={`parts-filter-toggle ${filtersExpanded || hasActiveFilters ? 'active' : ''}`}
+              onClick={() => setFiltersExpanded(!filtersExpanded)}
+            >
+              絞込 {hasActiveFilters && '●'}
             </button>
-          )}
+            <select
+              className="parts-select"
+              value={sortBy}
+              onChange={event => setSortBy(event.target.value as SortOption)}
+            >
+              <option value="position">抽出順</option>
+              <option value="confidence">信頼度順</option>
+              <option value="family">種別順</option>
+              <option value="source">サイト順</option>
+            </select>
+          </div>
         </div>
-        <div className="parts-filters">
-          <button className={`filter-btn pill ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
-            すべて ({sections.length})
-          </button>
-          {Object.entries(familyCounts)
-            .sort((a, b) => b[1] - a[1])
-            .map(([family, count]) => (
-              <button
-                key={family}
-                className={`filter-btn pill ${filter === family ? 'active' : ''}`}
-                onClick={() => setFilter(family)}
-              >
-                <span className="filter-dot" style={{ background: FAMILY_COLORS[family] || '#94a3b8' }} />
-                {FAMILY_LABELS[family] || family} ({count})
-              </button>
-            ))}
-        </div>
+        <input
+          type="search"
+          className="parts-search-input"
+          value={query}
+          onChange={event => setQuery(event.target.value)}
+          placeholder="検索..."
+        />
+        {filtersExpanded && (
+          <div className="parts-filters-panel">
+            <div className="parts-toggle-row">
+              <button className={`feature-toggle pill ${onlyImages ? 'active' : ''}`} onClick={() => setOnlyImages(prev => !prev)}>IMG</button>
+              <button className={`feature-toggle pill ${onlyCta ? 'active' : ''}`} onClick={() => setOnlyCta(prev => !prev)}>CTA</button>
+              <button className={`feature-toggle pill ${onlyForm ? 'active' : ''}`} onClick={() => setOnlyForm(prev => !prev)}>FORM</button>
+              {hasActiveFilters && <button className="inline-reset-btn" onClick={resetControls}>リセット</button>}
+            </div>
+            <div className="parts-filters">
+              <button className={`filter-btn pill ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>すべて</button>
+              {Object.entries(familyCounts)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 8)
+                .map(([family, count]) => (
+                  <button
+                    key={family}
+                    className={`filter-btn pill ${filter === family ? 'active' : ''}`}
+                    onClick={() => setFilter(family)}
+                  >
+                    <span className="filter-dot" style={{ background: FAMILY_COLORS[family] || '#94a3b8' }} />
+                    {FAMILY_LABELS[family] || family} {count}
+                  </button>
+                ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="parts-list">
