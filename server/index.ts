@@ -1500,15 +1500,24 @@ app.post('/api/export/zip', async (req, res) => {
         tsx = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, tsxPath)
       }
 
-      // なければHTMLをコンポーネント化（即座に出力）
+      // なければHTMLをCSS付きでコンポーネント化
       if (!tsx) {
         const ctx = await getRenderContext(sectionId)
-        const html = ctx
-          ? await readBucketText(STORAGE_BUCKETS.RAW_HTML, ctx.section.raw_html_storage_path)
-          : ''
+        let html = ''
+        let cssContent = ''
+        if (ctx) {
+          html = await readBucketText(STORAGE_BUCKETS.RAW_HTML, ctx.section.raw_html_storage_path) || ''
+          // 元サイトのCSSバンドルを取得
+          if (ctx.page?.css_bundle_path) {
+            cssContent = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, ctx.page.css_bundle_path) || ''
+            if (!cssContent) cssContent = await readBucketText(STORAGE_BUCKETS.RAW_HTML, ctx.page.css_bundle_path) || ''
+          }
+        }
         if (html) {
           const safeName = blockFamily.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join('')
-          tsx = `export default function ${safeName}Section${i}() {\n  return (\n    <div dangerouslySetInnerHTML={{ __html: \`${html.replace(/`/g, '\\`')}\` }} />\n  )\n}\n`
+          const escapedHtml = html.replace(/`/g, '\\`').replace(/\$/g, '\\$')
+          const escapedCss = cssContent.replace(/`/g, '\\`').replace(/\$/g, '\\$')
+          tsx = `export default function ${safeName}Section${i}() {\n  return (\n    <>\n      ${escapedCss ? `<style dangerouslySetInnerHTML={{ __html: \`${escapedCss}\` }} />` : ''}\n      <div dangerouslySetInnerHTML={{ __html: \`${escapedHtml}\` }} />\n    </>\n  )\n}\n`
         }
       }
 
