@@ -186,13 +186,9 @@ export default function App() {
             }
             return next
           })
-          setLoading(false)
+          // loadingは維持（ターミナル画面で「抽出結果を見る」ボタンを表示）
           setJobStatus(null)
-          setView('editor') // 抽出完了後パーツ一覧に自動遷移
-          // パーツ一覧にスクロール
-          setTimeout(() => {
-            document.querySelector('.parts-panel')?.scrollIntoView({ behavior: 'smooth' })
-          }, 100)
+          setView('editor')
         } else if (job.status === 'failed') {
           stopPolling()
           setError(job.error_message || '取得に失敗しました')
@@ -463,7 +459,19 @@ export default function App() {
                   {jobStatus}
                 </div>
               )}
+              {!jobStatus && sections.length > 0 && (
+                <div className="terminal-done">
+                  <span>✓ 抽出完了 — {sections.length} パーツ</span>
+                </div>
+              )}
             </div>
+            {!jobStatus && sections.length > 0 && (
+              <div className="terminal-footer">
+                <button className="terminal-view-btn" onClick={() => setLoading(false)}>
+                  抽出結果を見る →
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

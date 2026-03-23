@@ -2138,3 +2138,41 @@ body {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
 }
+
+.terminal-done {
+  margin-top: 16px;
+  padding: 10px 12px;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid #10b981;
+  border-radius: 6px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 14px;
+  color: #10b981;
+  font-weight: 600;
+  animation: terminal-type 0.5s ease forwards;
+}
+
+.terminal-footer {
+  padding: 16px 20px;
+  border-top: 1px solid #21262d;
+  display: flex;
+  justify-content: center;
+}
+
+.terminal-view-btn {
+  padding: 12px 32px;
+  background: #10b981;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+  animation: terminal-type 0.5s ease forwards;
+}
+
+.terminal-view-btn:hover {
+  background: #059669;
+  transform: scale(1.02);
+}
