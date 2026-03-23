@@ -34,7 +34,7 @@ export function TsxModal({ tsx, familyName, onClose }: Props) {
           <h3>TSX {familyName && `- ${familyName}`}</h3>
           <div className="tsx-modal-actions">
             <button className={`tsx-copy-btn ${copied ? 'copied' : ''}`} onClick={handleCopy}>
-              {copied ? 'Copied!' : 'Copy'}
+              {copied ? 'コピー済み！' : 'コピー'}
             </button>
             <button className="tsx-close-btn" onClick={onClose}>&times;</button>
           </div>

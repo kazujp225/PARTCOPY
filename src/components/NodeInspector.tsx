@@ -106,7 +106,7 @@ export function NodeInspector({ sectionId, selectedNode, onApplyPatch, patchSetI
       const res = await fetch(`/api/sections/${sectionId}/patch-sets`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: 'Edit session' })
+        body: JSON.stringify({ label: '編集セッション' })
       })
       const data = await res.json()
       currentPatchSetId = data.patchSet?.id
@@ -210,7 +210,7 @@ export function NodeInspector({ sectionId, selectedNode, onApplyPatch, patchSetI
       {/* Computed Style 表示 */}
       {nodeDetail?.computed_style_jsonb && Object.keys(nodeDetail.computed_style_jsonb).length > 0 && (
         <div className="inspector-section">
-          <label>Computed Style</label>
+          <label>算出スタイル</label>
           <div className="inspector-styles">
             {Object.entries(nodeDetail.computed_style_jsonb).map(([k, v]) => (
               <div key={k} className="style-row">

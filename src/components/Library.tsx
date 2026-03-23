@@ -132,9 +132,9 @@ export function Library({ onAddToCanvas }: Props) {
   return (
     <div className="library">
       <div className="library-sidebar">
-        <h3 className="library-sidebar-title">Genres</h3>
+        <h3 className="library-sidebar-title">ジャンル</h3>
         <button className={`library-genre-btn ${!selectedGenre ? 'active' : ''}`} onClick={() => setSelectedGenre(null)}>
-          All ({totalGenreCount})
+          すべて ({totalGenreCount})
         </button>
         {genres.map(genre => (
           <button
@@ -142,13 +142,13 @@ export function Library({ onAddToCanvas }: Props) {
             className={`library-genre-btn ${selectedGenre === genre.genre ? 'active' : ''}`}
             onClick={() => setSelectedGenre(genre.genre)}
           >
-            {genre.genre || 'untagged'} ({genre.count})
+            {genre.genre || '未分類'} ({genre.count})
           </button>
         ))}
 
-        <h3 className="library-sidebar-title" style={{ marginTop: 20 }}>Block Families</h3>
+        <h3 className="library-sidebar-title" style={{ marginTop: 20 }}>ブロック種別</h3>
         <button className={`library-genre-btn ${!selectedFamily ? 'active' : ''}`} onClick={() => setSelectedFamily(null)}>
-          All families
+          すべての種別
         </button>
         {families.map(family => (
           <button
@@ -170,7 +170,7 @@ export function Library({ onAddToCanvas }: Props) {
               className="parts-search-input"
               value={query}
               onChange={event => setQuery(event.target.value)}
-              placeholder="検索: domain / genre / tag / summary"
+              placeholder="検索: ドメイン / ジャンル / タグ / 概要"
             />
             <select
               className="parts-select"
@@ -179,8 +179,8 @@ export function Library({ onAddToCanvas }: Props) {
             >
               <option value="newest">新着順</option>
               <option value="confidence">信頼度順</option>
-              <option value="family">family順</option>
-              <option value="source">source順</option>
+              <option value="family">種別順</option>
+              <option value="source">サイト順</option>
             </select>
             <select
               className="parts-select"
@@ -213,7 +213,7 @@ export function Library({ onAddToCanvas }: Props) {
         </div>
 
         <div className="library-grid">
-          {loading && <div className="library-loading">Loading...</div>}
+          {loading && <div className="library-loading">読み込み中...</div>}
           {!loading && error && (
             <div className="library-empty">
               <p>{error}</p>
@@ -241,7 +241,7 @@ export function Library({ onAddToCanvas }: Props) {
                 </div>
                 {hoveredId === section.id && (
                   <div className="part-overlay-actions">
-                    <button className="add-btn-large" onClick={() => onAddToCanvas(section)}>+ Canvas</button>
+                    <button className="add-btn-large" onClick={() => onAddToCanvas(section)}>+ 追加</button>
                     <button className="remove-btn-small" onClick={() => handleDelete(section.id)}>削除</button>
                   </div>
                 )}

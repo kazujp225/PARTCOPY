@@ -23,7 +23,7 @@ export function Preview({ items }: Props) {
   return (
     <div className="preview-container">
       <div className="preview-mode-bar">
-        <span className="preview-label">Live Preview</span>
+        <span className="preview-label">プレビュー</span>
       </div>
       <div className="preview-screenshots">
         {items.map(item => (

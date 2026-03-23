@@ -31,7 +31,7 @@ export function URLInput({ onSubmit, loading, error, jobStatus }: Props) {
             disabled={loading}
           />
           <button type="submit" className="extract-btn" disabled={loading}>
-            {loading ? <span className="spinner" /> : 'Extract'}
+            {loading ? <span className="spinner" /> : '抽出する'}
           </button>
         </div>
       </form>

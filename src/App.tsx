@@ -195,7 +195,7 @@ export default function App() {
           }, 100)
         } else if (job.status === 'failed') {
           stopPolling()
-          setError(job.error_message || 'Crawl failed')
+          setError(job.error_message || '取得に失敗しました')
           setLoading(false)
           setJobStatus(null)
         }
@@ -208,7 +208,7 @@ export default function App() {
   const handleExtract = useCallback(async (url: string, genre: string, tags: string[]) => {
     setLoading(true)
     setError(null)
-    setJobStatus('queuing...')
+    setJobStatus('準備中...')
     try {
       const res = await fetch('/api/extract', {
         method: 'POST',
@@ -216,7 +216,7 @@ export default function App() {
         body: JSON.stringify({ url, genre, tags })
       })
       if (!res.ok) {
-        let message = 'Failed to create job'
+        let message = 'ジョブの作成に失敗しました'
         try {
           const data = await res.json()
           message = data.error || message
@@ -224,7 +224,7 @@ export default function App() {
         throw new Error(message)
       }
       const { jobId } = await res.json()
-      setJobStatus('queued - waiting for worker...')
+      setJobStatus('処理待ち...')
       pollJob(jobId)
     } catch (err: any) {
       setError(err.message)
@@ -328,17 +328,17 @@ export default function App() {
       <header className="app-header">
         <div className="app-logo">
           <h1>PARTCOPY</h1>
-          <span className="app-tagline">Site Genome OS</span>
+          <span className="app-tagline">サイト構造解析ツール</span>
         </div>
         <div className="app-actions">
           <button className={`view-btn ${view === 'editor' ? 'active' : ''}`} onClick={() => setView('editor')}>
-            Editor
+            編集
           </button>
           <button className={`view-btn ${view === 'library' ? 'active' : ''}`} onClick={() => setView('library')}>
-            Library
+            ライブラリ
           </button>
           <button className={`view-btn ${view === 'preview' ? 'active' : ''}`} onClick={() => setView('preview')}>
-            Preview
+            プレビュー
           </button>
         </div>
       </header>
@@ -366,24 +366,24 @@ export default function App() {
         <div className="auto-crawl-section">
           <div className="auto-crawl-header" onClick={() => setCrawlExpanded(!crawlExpanded)}>
             <span className="auto-crawl-toggle">{crawlExpanded ? '\u25BC' : '\u25B6'}</span>
-            <span className="auto-crawl-title">Auto Crawl</span>
+            <span className="auto-crawl-title">自動取得</span>
             <span className={`auto-crawl-status ${crawlActive ? 'active' : 'idle'}`}>
-              {crawlActive ? 'Active' : 'Idle'}
+              {crawlActive ? '実行中' : '待機中'}
             </span>
             <span className="auto-crawl-counts">
-              Queue: {crawlQueueCount} | Done: {crawlDoneCount}
+              待ち: {crawlQueueCount} | 完了: {crawlDoneCount}
             </span>
           </div>
           {crawlExpanded && (
             <div className="auto-crawl-body">
               {crawlActive && crawlCurrentUrl && (
                 <div className="auto-crawl-current">
-                  Processing: <code>{crawlCurrentUrl}</code>
+                  処理中: <code>{crawlCurrentUrl}</code>
                 </div>
               )}
               <textarea
                 className="auto-crawl-textarea"
-                placeholder="Paste URLs here (one per line)..."
+                placeholder="URLを貼り付けてください（1行に1つ）..."
                 value={crawlUrls}
                 onChange={e => setCrawlUrls(e.target.value)}
                 rows={4}
@@ -394,14 +394,14 @@ export default function App() {
                   onClick={handleCrawlSubmit}
                   disabled={crawlSubmitting || !crawlUrls.trim()}
                 >
-                  {crawlSubmitting ? 'Adding...' : 'Add to Queue'}
+                  {crawlSubmitting ? '追加中...' : 'キューに追加'}
                 </button>
                 <button
                   className="auto-crawl-btn clear"
                   onClick={handleCrawlClear}
                   disabled={crawlQueueCount === 0}
                 >
-                  Clear Queue
+                  キューをクリア
                 </button>
               </div>
             </div>
