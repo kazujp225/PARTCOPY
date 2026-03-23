@@ -1500,20 +1500,15 @@ app.post('/api/export/zip', async (req, res) => {
         tsx = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, tsxPath)
       }
 
-      // なければClaudeでオンデマンド変換
+      // なければHTMLをコンポーネント化（即座に出力）
       if (!tsx) {
         const ctx = await getRenderContext(sectionId)
         const html = ctx
           ? await readBucketText(STORAGE_BUCKETS.RAW_HTML, ctx.section.raw_html_storage_path)
           : ''
         if (html) {
-          try {
-            tsx = await convertHtmlToTsx(html, blockFamily)
-          } catch (convErr: any) {
-            logger.warn('TSX on-demand conversion failed, using HTML fallback', { sectionId, error: convErr.message })
-            const safeName = blockFamily.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join('')
-            tsx = `export default function ${safeName}Section${i}() {\n  return (\n    <div dangerouslySetInnerHTML={{ __html: \`${html.replace(/`/g, '\\`')}\` }} />\n  )\n}\n`
-          }
+          const safeName = blockFamily.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join('')
+          tsx = `export default function ${safeName}Section${i}() {\n  return (\n    <div dangerouslySetInnerHTML={{ __html: \`${html.replace(/`/g, '\\`')}\` }} />\n  )\n}\n`
         }
       }
 
