@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { SourceSection, GenreInfo, BlockFamilyInfo } from '../types'
-import { SourcePreviewFrame } from './SourcePreviewFrame'
+// サムネイル画像を使用（iframeより軽量）
 import { FAMILY_COLORS } from '../constants'
 
 type SortOption = 'newest' | 'confidence' | 'family' | 'source'
@@ -238,7 +238,11 @@ export function Library({ onAddToCanvas }: Props) {
               onMouseLeave={() => setHoveredId(null)}
             >
               <div className="library-card-thumb">
-                <SourcePreviewFrame htmlUrl={section.htmlUrl} maxHeight={260} scale={0.5} />
+                {section.thumbnail_storage_path ? (
+                  <img src={`/assets/${section.thumbnail_storage_path}`} alt={section.block_family} loading="lazy" style={{ width: '100%', height: 'auto', maxHeight: 200, objectFit: 'cover', objectPosition: 'top center', display: 'block' }} />
+                ) : (
+                  <div className="library-card-no-thumb">プレビューなし</div>
+                )}
                 <div className="part-overlay-top">
                   <span className="part-type-badge" style={{ background: FAMILY_COLORS[section.block_family] || '#94a3b8' }}>
                     {familyLabelMap[section.block_family] || section.block_family}
