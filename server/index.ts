@@ -1523,10 +1523,10 @@ app.post('/api/export/zip', async (req, res) => {
     const renders = components.map(c => `      <${c.name} />`).join('\n')
     const appTsx = `import React from 'react'\n${imports}\n\nexport default function App() {\n  return (\n    <div>\n${renders}\n    </div>\n  )\n}\n`
 
-    // Generate index.tsx
-    const indexTsx = `import React from 'react'\nimport ReactDOM from 'react-dom/client'\nimport App from './App'\n\nReactDOM.createRoot(document.getElementById('root')!).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>\n)\n`
+    // Generate index.tsx (with CSS import)
+    const indexTsx = `import React from 'react'\nimport ReactDOM from 'react-dom/client'\nimport './index.css'\nimport App from './App'\n\nReactDOM.createRoot(document.getElementById('root')!).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>\n)\n`
 
-    // Generate package.json
+    // Generate package.json (with Tailwind CSS)
     const pkgJson = JSON.stringify({
       name: 'partcopy-export',
       private: true,
@@ -1544,13 +1544,30 @@ app.post('/api/export/zip', async (req, res) => {
         '@types/react': '^18.3.12',
         '@types/react-dom': '^18.3.1',
         '@vitejs/plugin-react': '^4.3.4',
+        tailwindcss: '^4.0.0',
+        '@tailwindcss/vite': '^4.0.0',
         typescript: '^5.6.0',
         vite: '^6.0.0'
       }
     }, null, 2)
 
-    // Generate index.html
-    const indexHtml = `<!DOCTYPE html>\n<html lang="ja">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>PARTCOPY Export</title>\n</head>\n<body>\n  <div id="root"></div>\n  <script type="module" src="/src/index.tsx"></script>\n</body>\n</html>\n`
+    // Generate index.html (with Google Fonts)
+    const indexHtml = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PARTCOPY Export</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700;900&family=Noto+Serif+JP:wght@400;700;900&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/index.tsx"></script>
+</body>
+</html>
+`
 
     // Generate tsconfig.json
     const tsconfigJson = JSON.stringify({
@@ -1573,13 +1590,48 @@ app.post('/api/export/zip', async (req, res) => {
       include: ['src']
     }, null, 2)
 
-    // Generate vite.config.ts
+    // Generate vite.config.ts (with Tailwind)
     const viteConfig = `import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
 })
+`
+
+    // Generate src/index.css (Tailwind + custom colors)
+    const indexCss = `@import "tailwindcss";
+
+@theme {
+  --color-z-black: #1a1a1a;
+  --color-z-blue: #2563eb;
+  --color-z-blue-dark: #1e40af;
+  --color-z-cyan: #06b6d4;
+  --color-z-purple: #7c3aed;
+  --color-z-red: #ef4444;
+  --font-sans: 'Noto Sans JP', system-ui, sans-serif;
+  --font-serif: 'Noto Serif JP', serif;
+}
+
+.stroke-text-blue {
+  -webkit-text-stroke: 2px #2563eb;
+  color: transparent;
+}
+
+.stroke-text-gray {
+  -webkit-text-stroke: 1px #4b5563;
+  color: transparent;
+}
+
+@keyframes scanline {
+  0% { top: -100%; }
+  100% { top: 100%; }
+}
+
+.animate-scanline {
+  animation: scanline 3s linear infinite;
+}
 `
 
     // Generate setup.sh
@@ -1661,6 +1713,7 @@ npm run build
     archive.append(readmeMd, { name: 'README.md' })
     archive.append(appTsx, { name: 'src/App.tsx' })
     archive.append(indexTsx, { name: 'src/index.tsx' })
+    archive.append(indexCss, { name: 'src/index.css' })
 
     for (const comp of components) {
       archive.append(comp.tsx, { name: `src/components/${comp.name}.tsx` })
