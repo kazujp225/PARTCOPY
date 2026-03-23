@@ -152,15 +152,27 @@ async function claimJob(): Promise<any | null> {
     return claimQueuedJob(WORKER_ID)
   }
 
-  const { data, error } = await supabaseAdmin
+  // Step 1: Find the oldest queued job
+  const { data: candidate } = await supabaseAdmin
     .from('crawl_runs')
-    .update({ status: 'claimed', worker_id: WORKER_ID, started_at: new Date().toISOString() })
+    .select('id')
     .eq('status', 'queued')
     .or(`run_after.is.null,run_after.lte.${new Date().toISOString()}`)
     .order('queued_at', { ascending: true })
     .limit(1)
+    .maybeSingle()
+
+  if (!candidate) return null
+
+  // Step 2: Claim it (atomic update with status check)
+  const { data, error } = await supabaseAdmin
+    .from('crawl_runs')
+    .update({ status: 'claimed', worker_id: WORKER_ID, started_at: new Date().toISOString() })
+    .eq('id', candidate.id)
+    .eq('status', 'queued')
     .select('*, source_sites(*)')
-    .single()
+    .maybeSingle()
+
   if (error || !data) return null
   return data
 }
