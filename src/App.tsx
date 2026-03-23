@@ -493,11 +493,11 @@ export default function App() {
       </aside>
 
       <main className="main-content">
-      {view !== 'library' && view !== 'dashboard' && (
+      {view === 'dashboard' && (
         <URLInput onSubmit={handleExtract} loading={loading} error={error} jobStatus={jobStatus} />
       )}
 
-      {view !== 'library' && view !== 'dashboard' && (
+      {view === 'dashboard' && (
         <div className="auto-crawl-section">
           <div className="auto-crawl-header" onClick={() => setCrawlExpanded(!crawlExpanded)}>
             <span className="auto-crawl-toggle">{crawlExpanded ? '\u25BC' : '\u25B6'}</span>
