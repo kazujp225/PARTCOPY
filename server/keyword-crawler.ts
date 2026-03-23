@@ -6,7 +6,6 @@
  * 3. クロールキューに追加
  */
 import { execFile } from 'child_process'
-import { launchBrowser } from './capture-runner.js'
 import { appendToQueue, startAutoCrawler, isAutoCrawlActive } from './auto-crawler.js'
 import { logger } from './logger.js'
 
@@ -41,47 +40,49 @@ async function expandKeywords(keyword: string): Promise<string[]> {
 }
 
 /**
- * Google検索でco.jpサイトのURLを取得
+ * DuckDuckGo HTML版で検索してURLを取得（bot検出が緩い）
  */
-async function searchGoogle(keyword: string, maxResults: number = 20): Promise<string[]> {
-  const browser = await launchBrowser()
+async function searchWeb(keyword: string, maxResults: number = 20): Promise<string[]> {
   const urls: string[] = []
 
   try {
-    const page = await browser.newPage()
-    const query = encodeURIComponent(`${keyword} site:.co.jp`)
-    const searchUrl = `https://www.google.co.jp/search?q=${query}&num=${maxResults}&hl=ja`
+    // DuckDuckGo HTML版はJavaScript不要で軽量
+    const query = encodeURIComponent(`${keyword} site:co.jp`)
+    const searchUrl = `https://html.duckduckgo.com/html/?q=${query}`
 
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 })
-
-    // Wait for results
-    await page.waitForSelector('#search', { timeout: 5000 }).catch(() => {})
-
-    // Extract URLs from search results
-    const results = await page.evaluate(() => {
-      const links: string[] = []
-      document.querySelectorAll('#search a[href]').forEach(a => {
-        const href = (a as HTMLAnchorElement).href
-        if (href && href.includes('.co.jp') && !href.includes('google.') && !href.includes('cache:')) {
-          try {
-            const url = new URL(href)
-            // Only keep homepage or main pages
-            const clean = `${url.protocol}//${url.hostname}`
-            if (!links.includes(clean)) {
-              links.push(clean)
-            }
-          } catch {}
-        }
-      })
-      return links
+    const res = await fetch(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept-Language': 'ja,en;q=0.9',
+      }
     })
 
-    urls.push(...results)
-    logger.info('Google search completed', { keyword, resultsFound: results.length })
+    if (!res.ok) {
+      logger.warn('DuckDuckGo search failed', { keyword, status: res.status })
+      return urls
+    }
+
+    const html = await res.text()
+
+    // Extract URLs from DuckDuckGo results
+    const urlRegex = /uddg=([^&"]+)/g
+    let match
+    while ((match = urlRegex.exec(html)) !== null && urls.length < maxResults) {
+      try {
+        const decoded = decodeURIComponent(match[1])
+        const url = new URL(decoded)
+        if (url.hostname.endsWith('.co.jp') || url.hostname.endsWith('.jp')) {
+          const clean = `${url.protocol}//${url.hostname}`
+          if (!urls.includes(clean)) {
+            urls.push(clean)
+          }
+        }
+      } catch {}
+    }
+
+    logger.info('Web search completed', { keyword, resultsFound: urls.length })
   } catch (err: any) {
-    logger.warn('Google search failed', { keyword, error: err.message })
-  } finally {
-    await browser.close().catch(() => {})
+    logger.warn('Web search failed', { keyword, error: err.message })
   }
 
   return urls
@@ -101,14 +102,14 @@ export async function searchAndQueue(keyword: string): Promise<{
   const expandedKeywords = await expandKeywords(keyword)
   logger.info('Keywords expanded', { original: keyword, expanded: expandedKeywords })
 
-  // Step 2: 各キーワードでGoogle検索
+  // Step 2: 各キーワードでWeb検索
   const allUrls = new Set<string>()
-  for (const kw of expandedKeywords.slice(0, 5)) {
-    const urls = await searchGoogle(kw, 10)
+  for (const kw of expandedKeywords.slice(0, 3)) {
+    const urls = await searchWeb(kw, 15)
     urls.forEach(u => allUrls.add(u))
 
-    // 検索間隔を空ける（Bot検出回避）
-    await new Promise(r => setTimeout(r, 3000 + Math.random() * 5000))
+    // 短い間隔（DuckDuckGoはbot検出が緩い）
+    await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000))
   }
 
   const uniqueUrls = [...allUrls]
