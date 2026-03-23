@@ -1631,6 +1631,26 @@ app.post('/api/crawl-queue', async (req, res) => {
   }
 })
 
+// ============================================================
+// キーワード検索 → 自動クロール
+// ============================================================
+app.post('/api/keyword-search', async (req, res) => {
+  const { keyword } = req.body
+  if (!keyword || typeof keyword !== 'string' || keyword.trim().length === 0) {
+    res.status(400).json({ error: 'キーワードを入力してください' })
+    return
+  }
+
+  try {
+    const { searchAndQueue } = await import('./keyword-crawler.js')
+    const result = await searchAndQueue(keyword.trim())
+    res.json(result)
+  } catch (err: any) {
+    logger.error('Keyword search failed', { keyword, error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
 app.delete('/api/crawl-queue', async (_req, res) => {
   try {
     await clearQueue()

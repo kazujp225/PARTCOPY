@@ -2307,3 +2307,83 @@ body {
   font-weight: 500;
   margin-bottom: 12px;
 }
+
+/* キーワード検索 */
+.keyword-search {
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.keyword-search-row {
+  display: flex;
+  gap: 8px;
+}
+
+.keyword-search-input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.keyword-search-input:focus {
+  border-color: var(--primary);
+}
+
+.keyword-search-btn {
+  padding: 10px 20px;
+  background: #10b981;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.keyword-search-btn:hover { background: #059669; }
+.keyword-search-btn:disabled { background: #6ee7b7; cursor: wait; }
+
+.keyword-search-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--text2);
+  font-size: 13px;
+}
+
+.keyword-search-result {
+  margin-top: 10px;
+}
+
+.keyword-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.keyword-tag {
+  padding: 3px 10px;
+  background: rgba(37, 99, 235, 0.1);
+  color: var(--primary);
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.keyword-summary {
+  font-size: 13px;
+  color: #10b981;
+  font-weight: 500;
+  margin: 0;
+}
