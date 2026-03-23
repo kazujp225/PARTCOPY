@@ -43,8 +43,8 @@ const MAX_RETRIES = 3
 const RETRY_BASE_DELAY_S = 5
 const DATA_RETENTION_DAYS = Number(process.env.DATA_RETENTION_DAYS) || 30
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
-const SITE_TIMEOUT_MS = 90000 // 90s overall timeout for download + section detection
-const DOWNLOAD_TIMEOUT_MS = 60000 // 60s timeout for site download
+const SITE_TIMEOUT_MS = 180000 // 180s overall timeout for download + section detection
+const DOWNLOAD_TIMEOUT_MS = 150000 // 150s timeout for site download (images+fonts take time)
 const DETECT_TIMEOUT_MS = 30000 // 30s timeout for section detection
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<{ result: T; timedOut: false } | { result: undefined; timedOut: true }> {
