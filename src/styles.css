@@ -2213,3 +2213,73 @@ body {
   font-size: 10px;
   font-weight: 700;
 }
+
+/* 自動取得 — 処理ステップ表示 */
+.auto-crawl-steps {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--surface2);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.crawl-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  opacity: 0.4;
+  transition: opacity 0.3s;
+}
+
+.crawl-step.active {
+  opacity: 1;
+}
+
+.crawl-step-icon {
+  font-size: 10px;
+  margin-top: 3px;
+  color: var(--text3);
+}
+
+.crawl-step.active .crawl-step-icon {
+  color: #10b981;
+  animation: phase-pulse 1.5s infinite;
+}
+
+.crawl-step-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.crawl-step-detail strong {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.crawl-step.active .crawl-step-detail strong {
+  color: #10b981;
+}
+
+.crawl-step-detail span {
+  font-size: 11px;
+  color: var(--text3);
+}
+
+.auto-crawl-url {
+  margin-bottom: 4px;
+}
+
+.auto-crawl-done-msg {
+  padding: 10px 12px;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: 8px;
+  color: #10b981;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
