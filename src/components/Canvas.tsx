@@ -64,10 +64,10 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
     return (
       <main className="canvas">
         <div className="canvas-empty">
-          <div className="canvas-empty-icon">&#10010;</div>
-          <h3>Canvas</h3>
-          <p>左のパーツにホバーして「+ 追加」で配置</p>
-          <p className="canvas-hint">ドラッグ&ドロップで順序変更</p>
+          <div className="canvas-empty-icon" style={{ fontSize: '3rem' }}>&oplus;</div>
+          <h3 style={{ fontSize: '1.25rem', margin: '0.75rem 0 0.5rem' }}>パーツを追加してページを組み立てよう</h3>
+          <p style={{ fontSize: '0.95rem' }}>左のパーツにホバーして「+ 追加」ボタンで Canvas に配置できます</p>
+          <p className="canvas-hint">ドラッグ&amp;ドロップで順序を変更</p>
         </div>
       </main>
     )
@@ -80,8 +80,8 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
           <h2>Canvas ({items.length} ブロック)</h2>
           <div className="canvas-header-actions">
             {onExportZip && items.length > 0 && (
-              <button className="zip-btn" onClick={onExportZip} disabled={exporting}>
-                {exporting ? '出力中...' : 'ZIP ダウンロード'}
+              <button className="zip-btn primary" onClick={onExportZip} disabled={exporting}>
+                {exporting ? '出力中...' : '\u2193 ZIP ダウンロード'}
               </button>
             )}
             {editingIndex !== null && (

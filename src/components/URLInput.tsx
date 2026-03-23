@@ -28,6 +28,7 @@ export function URLInput({ onSubmit, loading, error, jobStatus }: Props) {
             onChange={e => setUrl(e.target.value)}
             placeholder="URLを入力 (例: https://example.co.jp)"
             className="url-field"
+            style={{ padding: '0.85rem 1rem', fontSize: '1rem' }}
             disabled={loading}
           />
           <button type="submit" className="extract-btn" disabled={loading}>
@@ -35,6 +36,9 @@ export function URLInput({ onSubmit, loading, error, jobStatus }: Props) {
           </button>
         </div>
       </form>
+      <p className="url-input-description" style={{ margin: '0.35rem 0 0', fontSize: '0.8rem', color: '#94a3b8' }}>
+        URLを入力してサイトのパーツを自動抽出します
+      </p>
       {jobStatus && (
         <div className={`job-status ${jobStatus.includes('Claude') ? 'claude-active' : ''}`}>
           {jobStatus.includes('Claude') && <span className="claude-spinner" />}

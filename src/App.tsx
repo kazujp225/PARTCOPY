@@ -359,27 +359,18 @@ export default function App() {
           <button className={`view-btn ${view === 'preview' ? 'active' : ''}`} onClick={() => setView('preview')}>
             プレビュー
           </button>
+          <div className="header-stats">
+            <span className="header-stat-badge">パーツ {sections.length}</span>
+            <span className="header-stat-badge">ファミリー {familyCount}</span>
+            <span className="header-stat-badge">Canvas {canvas.length}</span>
+            <span className="header-stat-badge">サイト {sourceCount}</span>
+          </div>
         </div>
       </header>
 
-      <div className="workspace-summary">
-        <div className="workspace-stat">
-          <span className="workspace-stat-label">抽出パーツ</span>
-          <strong>{sections.length}</strong>
-        </div>
-        <div className="workspace-stat">
-          <span className="workspace-stat-label">ファミリー</span>
-          <strong>{familyCount}</strong>
-        </div>
-        <div className="workspace-stat">
-          <span className="workspace-stat-label">Canvas</span>
-          <strong>{canvas.length}</strong>
-        </div>
-        <div className="workspace-stat">
-          <span className="workspace-stat-label">参照サイト</span>
-          <strong>{sourceCount}</strong>
-        </div>
-      </div>
+      {view !== 'library' && (
+        <URLInput onSubmit={handleExtract} loading={loading} error={error} jobStatus={jobStatus} />
+      )}
 
       {view !== 'library' && (
         <div className="auto-crawl-section">
@@ -500,10 +491,6 @@ export default function App() {
             </div>
           )}
         </div>
-      )}
-
-      {view !== 'library' && (
-        <URLInput onSubmit={handleExtract} loading={loading} error={error} jobStatus={jobStatus} />
       )}
 
       {view === 'editor' && (
