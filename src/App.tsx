@@ -45,7 +45,8 @@ export default function App() {
   const [crawlSubmitting, setCrawlSubmitting] = useState(false)
   const [keywordSearch, setKeywordSearch] = useState('')
   const [keywordSearching, setKeywordSearching] = useState(false)
-  const [keywordResult, setKeywordResult] = useState<{ keywords: string[]; urls: string[]; queued: number } | null>(null)
+  const [keywordResult, setKeywordResult] = useState<{ keywords: string[]; urls: string[] } | null>(null)
+  const [selectedUrls, setSelectedUrls] = useState<Set<string>>(new Set())
 
   // Persist canvas to localStorage (debounced to avoid excessive writes)
   useEffect(() => {
@@ -136,6 +137,7 @@ export default function App() {
     if (!keywordSearch.trim()) return
     setKeywordSearching(true)
     setKeywordResult(null)
+    setSelectedUrls(new Set())
     try {
       const res = await fetch('/api/keyword-search', {
         method: 'POST',
@@ -144,13 +146,31 @@ export default function App() {
       })
       if (res.ok) {
         const data = await res.json()
-        setKeywordResult({ keywords: data.expandedKeywords, urls: data.urls, queued: data.queued })
-        setCrawlQueueCount(prev => prev + data.queued)
-        setCrawlActive(true)
+        setKeywordResult({ keywords: data.expandedKeywords, urls: data.urls })
+        // デフォルトで全選択
+        setSelectedUrls(new Set(data.urls))
       }
     } catch {}
     setKeywordSearching(false)
   }, [keywordSearch])
+
+  const handleAddSelectedToQueue = useCallback(async () => {
+    if (selectedUrls.size === 0) return
+    try {
+      const res = await fetch('/api/crawl-queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls: [...selectedUrls] })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setCrawlQueueCount(data.queue?.length || 0)
+        setCrawlActive(data.active || false)
+        setKeywordResult(null)
+        setSelectedUrls(new Set())
+      }
+    } catch {}
+  }, [selectedUrls])
 
   const familyCount = new Set(sections.map(section => section.block_family)).size
   const sourceCount = new Set(
@@ -405,9 +425,48 @@ export default function App() {
                         <span key={i} className="keyword-tag">{kw}</span>
                       ))}
                     </div>
-                    <p className="keyword-summary">
-                      {keywordResult.urls.length}サイト発見 → {keywordResult.queued}件をキューに追加しました
-                    </p>
+                    <p className="keyword-summary">{keywordResult.urls.length}サイト発見</p>
+                    <div className="keyword-url-list">
+                      <div className="keyword-url-header">
+                        <label className="keyword-select-all">
+                          <input
+                            type="checkbox"
+                            checked={selectedUrls.size === keywordResult.urls.length}
+                            onChange={e => {
+                              if (e.target.checked) {
+                                setSelectedUrls(new Set(keywordResult.urls))
+                              } else {
+                                setSelectedUrls(new Set())
+                              }
+                            }}
+                          />
+                          すべて選択
+                        </label>
+                        <span className="keyword-selected-count">{selectedUrls.size}件選択中</span>
+                      </div>
+                      {keywordResult.urls.map(url => (
+                        <label key={url} className="keyword-url-item">
+                          <input
+                            type="checkbox"
+                            checked={selectedUrls.has(url)}
+                            onChange={e => {
+                              const next = new Set(selectedUrls)
+                              if (e.target.checked) next.add(url)
+                              else next.delete(url)
+                              setSelectedUrls(next)
+                            }}
+                          />
+                          <span className="keyword-url-text">{url.replace(/^https?:\/\//, '')}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <button
+                      className="keyword-add-btn"
+                      onClick={handleAddSelectedToQueue}
+                      disabled={selectedUrls.size === 0}
+                    >
+                      {selectedUrls.size}件をキューに追加
+                    </button>
                   </div>
                 )}
               </div>
