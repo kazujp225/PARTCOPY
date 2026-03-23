@@ -282,10 +282,20 @@ export async function getQueueStatus(): Promise<{
 }> {
   const queue = await readQueue()
   const done = await readDone()
+
+  // メモリ変数がtrueならそれを使う（workerプロセス内）
+  if (active) {
+    return { queue, done, active, currentUrl }
+  }
+
+  // APIサーバーからの呼び出し: キューにURLがあれば実行中とみなす
+  const isProcessing = queue.length > 0
+  const processingUrl = queue.length > 0 ? queue[0] : null
+
   return {
     queue,
     done,
-    active,
-    currentUrl
+    active: isProcessing,
+    currentUrl: processingUrl
   }
 }
