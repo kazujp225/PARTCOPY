@@ -18,6 +18,7 @@ export function SourcePreviewFrame({ htmlUrl, maxHeight, scale }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [height, setHeight] = useState(300)
   const [containerWidth, setContainerWidth] = useState(0)
+  const [loadFailed, setLoadFailed] = useState(false)
 
   // コンテナ幅を監視
   useEffect(() => {
@@ -41,21 +42,25 @@ export function SourcePreviewFrame({ htmlUrl, maxHeight, scale }: Props) {
         const doc = iframe.contentDocument || iframe.contentWindow?.document
         if (doc?.body) {
           const h = doc.body.scrollHeight
+          const text = doc.body.textContent || ''
+          // コンテンツが壊れているか判定
+          if (h < 10 || text.includes('Section not found') || text.includes('not found') || text.trim().length < 5) {
+            setLoadFailed(true)
+            return
+          }
+          setLoadFailed(false)
           setHeight(Math.min(h || 300, maxHeight || 10000))
         }
-      } catch {}
+      } catch {
+        setLoadFailed(true)
+      }
     }
     iframe.addEventListener('load', handleLoad)
     return () => iframe.removeEventListener('load', handleLoad)
   }, [htmlUrl, maxHeight])
 
-  if (!htmlUrl) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center',
-        height: 100, color: '#8b90a0', fontSize: 14, background: '#f1f3f7' }}>
-        No Preview
-      </div>
-    )
+  if (!htmlUrl || loadFailed) {
+    return null
   }
 
   // 明示的な scale が指定されていればそれを使う。なければコンテナ幅から算出
