@@ -678,10 +678,5 @@ async function pollLoop() {
 
 pollLoop()
 
-// Start auto-crawler if queue file exists
-import { existsSync } from 'fs'
-import path from 'path'
-const CRAWL_QUEUE_PATH = path.resolve(process.cwd(), '.partcopy/crawl-queue.txt')
-if (existsSync(CRAWL_QUEUE_PATH)) {
-  startAutoCrawler()
-}
+// 常にauto-crawlerを起動（キューファイルがあれば処理、なければ待機）
+startAutoCrawler()
