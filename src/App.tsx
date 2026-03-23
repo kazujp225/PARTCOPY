@@ -183,7 +183,6 @@ export default function App() {
     } catch {}
   }, [selectedUrls])
 
-  const familyCount = new Set(sections.map(section => section.block_family)).size
   const sourceCount = new Set(
     sections
       .map(section => section.source_sites?.normalized_domain)
@@ -362,33 +361,34 @@ export default function App() {
   return (
     <div className="app">
       <ErrorBoundary>
-      <header className="app-header">
-        <div className="app-logo">
+      <aside className="sidebar">
+        <div className="sidebar-logo">
           <h1>PARTCOPY</h1>
-          <span className="app-tagline">サイト構造解析ツール</span>
+          <span>サイト構造解析ツール</span>
         </div>
-        <div className="app-actions">
-          <button className={`view-btn ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>
+        <nav className="sidebar-nav">
+          <span className="sidebar-nav-label">メニュー</span>
+          <button className={`sidebar-nav-btn ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>
             ダッシュボード
           </button>
-          <button className={`view-btn ${view === 'editor' ? 'active' : ''}`} onClick={() => setView('editor')}>
+          <button className={`sidebar-nav-btn ${view === 'editor' ? 'active' : ''}`} onClick={() => setView('editor')}>
             編集
           </button>
-          <button className={`view-btn ${view === 'library' ? 'active' : ''}`} onClick={() => setView('library')}>
+          <button className={`sidebar-nav-btn ${view === 'library' ? 'active' : ''}`} onClick={() => setView('library')}>
             ライブラリ
           </button>
-          <button className={`view-btn ${view === 'preview' ? 'active' : ''}`} onClick={() => setView('preview')}>
+          <button className={`sidebar-nav-btn ${view === 'preview' ? 'active' : ''}`} onClick={() => setView('preview')}>
             プレビュー
           </button>
-          <div className="header-stats">
-            <span className="header-stat-badge">パーツ {sections.length}</span>
-            <span className="header-stat-badge">ファミリー {familyCount}</span>
-            <span className="header-stat-badge">Canvas {canvas.length}</span>
-            <span className="header-stat-badge">サイト {sourceCount}</span>
-          </div>
+        </nav>
+        <div className="sidebar-stats">
+          <div className="sidebar-stat">パーツ <strong>{sections.length}</strong></div>
+          <div className="sidebar-stat">サイト <strong>{sourceCount}</strong></div>
+          <div className="sidebar-stat">Canvas <strong>{canvas.length}</strong></div>
         </div>
-      </header>
+      </aside>
 
+      <main className="main-content">
       {view !== 'library' && view !== 'dashboard' && (
         <URLInput onSubmit={handleExtract} loading={loading} error={error} jobStatus={jobStatus} />
       )}
@@ -652,6 +652,7 @@ export default function App() {
           </div>
         </div>
       )}
+      </main>
       </ErrorBoundary>
     </div>
   )
