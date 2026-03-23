@@ -3096,3 +3096,43 @@ body {
   font-weight: 700;
   margin: 0;
 }
+
+/* Dashboard extract bar */
+.dash-extract-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.dash-extract-input {
+  flex: 1;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 15px;
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.dash-extract-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.dash-extract-btn {
+  padding: 12px 24px;
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.dash-extract-btn:hover { background: #1d4ed8; }
+.dash-extract-btn:disabled { opacity: 0.5; cursor: not-allowed; }

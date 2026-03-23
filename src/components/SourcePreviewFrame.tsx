@@ -1,7 +1,6 @@
 /**
  * SourcePreviewFrame — QA用の読み取り専用プレビュー。
  * iframe 内部は常に1440px幅でレンダリングし、コンテナに合わせて縮小表示。
- * これによりメディアクエリがデスクトップ判定になる。
  */
 import React, { useRef, useEffect, useState } from 'react'
 
@@ -18,9 +17,7 @@ export function SourcePreviewFrame({ htmlUrl, maxHeight, scale }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [height, setHeight] = useState(300)
   const [containerWidth, setContainerWidth] = useState(0)
-  const [loadFailed, setLoadFailed] = useState(false)
 
-  // コンテナ幅を監視
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -42,28 +39,20 @@ export function SourcePreviewFrame({ htmlUrl, maxHeight, scale }: Props) {
         const doc = iframe.contentDocument || iframe.contentWindow?.document
         if (doc?.body) {
           const h = doc.body.scrollHeight
-          const text = doc.body.textContent || ''
-          // コンテンツが壊れているか判定
-          if (h < 10 || text.includes('Section not found') || text.includes('not found') || text.trim().length < 5) {
-            setLoadFailed(true)
-            return
-          }
-          setLoadFailed(false)
           setHeight(Math.min(h || 300, maxHeight || 10000))
         }
       } catch {
-        setLoadFailed(true)
+        // cross-origin: ignore
       }
     }
     iframe.addEventListener('load', handleLoad)
     return () => iframe.removeEventListener('load', handleLoad)
   }, [htmlUrl, maxHeight])
 
-  if (!htmlUrl || loadFailed) {
+  if (!htmlUrl) {
     return null
   }
 
-  // 明示的な scale が指定されていればそれを使う。なければコンテナ幅から算出
   const computedScale = scale || (containerWidth > 0 ? containerWidth / DESKTOP_WIDTH : 0.5)
   const displayHeight = height * computedScale
 

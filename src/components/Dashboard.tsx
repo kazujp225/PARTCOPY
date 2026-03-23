@@ -5,9 +5,12 @@ interface Props {
   sections: SourceSection[]
   canvas: CanvasBlock[]
   onNavigate: (view: string) => void
+  onExtract?: (url: string) => void
+  extractLoading?: boolean
 }
 
-export function Dashboard({ sections, canvas, onNavigate }: Props) {
+export function Dashboard({ sections, canvas, onNavigate, onExtract, extractLoading }: Props) {
+  const [extractUrl, setExtractUrl] = useState('')
   const [crawlQueue, setCrawlQueue] = useState(0)
   const [crawlDone, setCrawlDone] = useState(0)
   const [crawlActive, setCrawlActive] = useState(false)
@@ -70,15 +73,38 @@ export function Dashboard({ sections, canvas, onNavigate }: Props) {
           <h2>ダッシュボード</h2>
           <p className="dashboard-subtitle">パーツライブラリの概要</p>
         </div>
-        <div className="dashboard-actions">
-          <button className="dash-action-btn primary" onClick={() => onNavigate('editor')}>
-            URLから抽出
-          </button>
-          <button className="dash-action-btn" onClick={() => onNavigate('library')}>
-            ライブラリを見る
+      </div>
+
+      {onExtract && (
+        <div className="dash-extract-bar">
+          <input
+            type="text"
+            className="dash-extract-input"
+            placeholder="URLを入力してパーツを抽出..."
+            value={extractUrl}
+            onChange={e => setExtractUrl(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && extractUrl.trim()) {
+                onExtract(extractUrl.trim())
+                setExtractUrl('')
+              }
+            }}
+            disabled={extractLoading}
+          />
+          <button
+            className="dash-extract-btn"
+            onClick={() => {
+              if (extractUrl.trim()) {
+                onExtract(extractUrl.trim())
+                setExtractUrl('')
+              }
+            }}
+            disabled={extractLoading || !extractUrl.trim()}
+          >
+            {extractLoading ? '抽出中...' : '抽出する'}
           </button>
         </div>
-      </div>
+      )}
 
       <div className="dashboard-stats">
         <div className="dash-stat-card primary">
