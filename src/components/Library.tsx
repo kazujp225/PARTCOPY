@@ -213,7 +213,12 @@ export function Library({ onAddToCanvas }: Props) {
         </div>
 
         <div className="library-grid">
-          {loading && <div className="library-loading">読み込み中...</div>}
+          {loading && (
+            <div className="library-loading">
+              <div className="loading-spinner" />
+              <span>最新情報を取得しています...</span>
+            </div>
+          )}
           {!loading && error && (
             <div className="library-empty">
               <p>{error}</p>
