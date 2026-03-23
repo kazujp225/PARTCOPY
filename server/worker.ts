@@ -583,8 +583,9 @@ async function processJob(job: any) {
       await setCrawlRunStatus(job.id, { status_detail: 'TSX変換中...' })
       logger.info('Phase 6: Starting background TSX conversion', { jobId: job.id, taskCount: tsxTasks.length })
 
-      const BATCH_SIZE = 3
+      const BATCH_SIZE = 5
       for (let i = 0; i < tsxTasks.length; i += BATCH_SIZE) {
+        await setCrawlRunStatus(job.id, { status_detail: `TSX変換中 (Claude) ${Math.min(i + BATCH_SIZE, tsxTasks.length)}/${tsxTasks.length}` })
         const batch = tsxTasks.slice(i, i + BATCH_SIZE)
         await Promise.allSettled(batch.map(async (task) => {
           try {
@@ -601,7 +602,6 @@ async function processJob(job: any) {
             logger.warn('TSX conversion failed', { sectionId: task.sectionId, error: err.message })
           }
         }))
-        await setCrawlRunStatus(job.id, { status_detail: `TSX変換中 (Claude) ${Math.min(i + BATCH_SIZE, tsxTasks.length)}/${tsxTasks.length}` })
       }
 
       logger.info('Phase 6: TSX conversion complete', { jobId: job.id, taskCount: tsxTasks.length })

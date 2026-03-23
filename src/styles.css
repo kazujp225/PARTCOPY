@@ -2224,6 +2224,11 @@ body {
   animation: phase-pulse 1.5s infinite;
 }
 
+.crawl-step.done .crawl-step-icon {
+  color: var(--primary);
+  animation: none;
+}
+
 .crawl-step-detail {
   display: flex;
   flex-direction: column;

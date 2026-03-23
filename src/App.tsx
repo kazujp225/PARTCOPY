@@ -43,6 +43,7 @@ export default function App() {
   const [crawlUrls, setCrawlUrls] = useState('')
   const [crawlExpanded, setCrawlExpanded] = useState(false)
   const [crawlSubmitting, setCrawlSubmitting] = useState(false)
+  const [crawlStep, setCrawlStep] = useState(1)
   const [keywordSearch, setKeywordSearch] = useState('')
   const [keywordSearching, setKeywordSearching] = useState(false)
   const [keywordResult, setKeywordResult] = useState<{ keywords: string[]; urls: string[] } | null>(null)
@@ -76,6 +77,15 @@ export default function App() {
       })
       .catch(() => {})
   }, [])
+  // Cycle crawl steps 1→2→3→4 every 8 seconds while active
+  useEffect(() => {
+    if (!crawlActive) { setCrawlStep(1); return }
+    const interval = setInterval(() => {
+      setCrawlStep(prev => prev >= 4 ? 1 : prev + 1)
+    }, 8000)
+    return () => clearInterval(interval)
+  }, [crawlActive])
+
   // Poll crawl queue status (only when the auto-crawl section is expanded)
   useEffect(() => {
     if (!crawlExpanded) return
@@ -475,29 +485,29 @@ export default function App() {
                 <div className="auto-crawl-current">
                   <div className="auto-crawl-url">処理中: <code>{crawlCurrentUrl}</code></div>
                   <div className="auto-crawl-steps">
-                    <div className="crawl-step active">
-                      <span className="crawl-step-icon">●</span>
+                    <div className={`crawl-step ${crawlStep >= 1 ? (crawlStep === 1 ? 'active' : 'done') : ''}`}>
+                      <span className="crawl-step-icon">{crawlStep > 1 ? '●' : crawlStep === 1 ? '●' : '○'}</span>
                       <div className="crawl-step-detail">
                         <strong>1. サイトをダウンロード</strong>
                         <span>HTML・CSS・画像・フォントを取得中</span>
                       </div>
                     </div>
-                    <div className="crawl-step">
-                      <span className="crawl-step-icon">○</span>
+                    <div className={`crawl-step ${crawlStep >= 2 ? (crawlStep === 2 ? 'active' : 'done') : ''}`}>
+                      <span className="crawl-step-icon">{crawlStep > 2 ? '●' : crawlStep === 2 ? '●' : '○'}</span>
                       <div className="crawl-step-detail">
                         <strong>2. パーツに分解</strong>
                         <span>ヘッダー・ヒーロー・料金表などに自動分割</span>
                       </div>
                     </div>
-                    <div className="crawl-step">
-                      <span className="crawl-step-icon">○</span>
+                    <div className={`crawl-step ${crawlStep >= 3 ? (crawlStep === 3 ? 'active' : 'done') : ''}`}>
+                      <span className="crawl-step-icon">{crawlStep > 3 ? '●' : crawlStep === 3 ? '●' : '○'}</span>
                       <div className="crawl-step-detail">
                         <strong>3. TSXに変換</strong>
                         <span>Claudeがデザインを保ったままコード化</span>
                       </div>
                     </div>
-                    <div className="crawl-step">
-                      <span className="crawl-step-icon">○</span>
+                    <div className={`crawl-step ${crawlStep === 4 ? 'active' : ''}`}>
+                      <span className="crawl-step-icon">{crawlStep === 4 ? '●' : '○'}</span>
                       <div className="crawl-step-detail">
                         <strong>4. ライブラリに保存</strong>
                         <span>次のURLへ自動で進みます</span>
