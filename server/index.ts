@@ -260,13 +260,13 @@ async function getJobSectionsRecord(jobId: string) {
     return { page, sections }
   }
 
-  const { data: page } = await supabaseAdmin
+  const { data: page, error: pageError } = await supabaseAdmin
     .from('source_pages')
     .select('id, css_bundle_path, url')
     .eq('crawl_run_id', jobId)
-    .limit(1)
-    .single()
+    .maybeSingle()
 
+  if (pageError) throw new Error(pageError.message)
   if (!page) return null
 
   const { data: sections, error } = await supabaseAdmin
@@ -642,25 +642,61 @@ async function getDefaultVariantRecord() {
 // Clean asset serving: /assets/{siteId}/{jobId}/...
 // ============================================================
 app.get('/assets/:siteId/:jobId/*', async (req, res) => {
+  const { siteId, jobId } = req.params
+  const filePath = req.params[0]
+  const storagePath = `${siteId}/${jobId}/${filePath}`
+
+  // Determine content type from extension
+  const ext = filePath.split('.').pop()?.toLowerCase() || ''
+  const contentTypes: Record<string, string> = {
+    css: 'text/css',
+    html: 'text/html',
+    js: 'application/javascript',
+    json: 'application/json',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    svg: 'image/svg+xml',
+    webp: 'image/webp',
+    woff: 'font/woff',
+    woff2: 'font/woff2',
+    ttf: 'font/ttf',
+    otf: 'font/otf',
+    eot: 'application/vnd.ms-fontobject',
+    ico: 'image/x-icon',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+  }
+  const contentType = contentTypes[ext] || 'application/octet-stream'
+
   if (HAS_SUPABASE) {
-    res.status(404).send('Not found in local mode')
+    // Try all relevant buckets
+    for (const bucket of [STORAGE_BUCKETS.RAW_HTML, STORAGE_BUCKETS.SANITIZED_HTML, STORAGE_BUCKETS.SECTION_THUMBNAILS, STORAGE_BUCKETS.PAGE_SCREENSHOTS]) {
+      const { data, error } = await supabaseAdmin.storage.from(bucket).download(storagePath)
+      if (data && !error) {
+        const buffer = Buffer.from(await data.arrayBuffer())
+        res.setHeader('Content-Type', contentType)
+        res.setHeader('Cache-Control', 'public, max-age=86400')
+        res.send(buffer)
+        return
+      }
+    }
+    res.status(404).send('Asset not found')
     return
   }
 
-  const { siteId, jobId } = req.params
-  const rest = (req.params as any)[0] as string // e.g. "img/5-1-1.png" or "bundle.css"
-  const storagePath = `${siteId}/${jobId}/${rest}`
-
+  // Local mode - serve from local storage
   try {
-    const { buffer, contentType } = await getStoredFileResponse(STORAGE_BUCKETS.RAW_HTML, storagePath)
-    res.setHeader('Content-Type', contentType)
+    const { buffer, contentType: localContentType } = await getStoredFileResponse(STORAGE_BUCKETS.RAW_HTML, storagePath)
+    res.setHeader('Content-Type', localContentType)
     res.setHeader('Cache-Control', 'public, max-age=86400')
     res.send(buffer)
   } catch {
     // Fallback: try sanitized-html bucket
     try {
-      const { buffer, contentType } = await getStoredFileResponse(STORAGE_BUCKETS.SANITIZED_HTML, storagePath)
-      res.setHeader('Content-Type', contentType)
+      const { buffer, contentType: localContentType } = await getStoredFileResponse(STORAGE_BUCKETS.SANITIZED_HTML, storagePath)
+      res.setHeader('Content-Type', localContentType)
       res.setHeader('Cache-Control', 'public, max-age=86400')
       res.send(buffer)
     } catch {
@@ -767,7 +803,7 @@ app.get('/api/jobs/:id/sections', async (req, res) => {
 })
 
 // ============================================================
-// Render: Serve section HTML + CSS bundle via <link>
+// Render: Serve section HTML with inlined CSS
 // ============================================================
 app.get('/api/sections/:sectionId/render', async (req, res) => {
   const { sectionId } = req.params
@@ -799,11 +835,17 @@ app.get('/api/sections/:sectionId/render', async (req, res) => {
     // Resolve any remaining relative URLs to absolute (instead of <base> which breaks /assets/ paths)
     storedHtml = resolveRelativeUrls(storedHtml, pageOrigin)
 
-    // Link to CSS bundle file instead of inlining (much smaller response)
-    const cssBundlePath = record.page.css_bundle_path
-    const cssLink = cssBundlePath ? `<link rel="stylesheet" href="/assets/${cssBundlePath}">` : ''
+    // Inline CSS content directly (the /assets/ link path doesn't resolve)
+    let cssContent = ''
+    if (record.page.css_bundle_path) {
+      cssContent = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.page.css_bundle_path)
+      if (!cssContent) {
+        cssContent = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.page.css_bundle_path)
+      }
+    }
+    const cssStyle = cssContent ? `<style>${cssContent}</style>` : ''
 
-    const html = buildRenderDocument(storedHtml, pageOrigin, { extraHead: cssLink, skipBase: true })
+    const html = buildRenderDocument(storedHtml, pageOrigin, { extraHead: cssStyle, skipBase: true })
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache')
@@ -1047,9 +1089,15 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
       return
     }
 
-    // CSS bundle via <link> (resolved inline HTMLの場合でもCSSは必要ない場合がある)
-    const cssBundlePath = record.page.css_bundle_path
-    const cssLink = cssBundlePath ? `<link rel="stylesheet" href="/assets/${cssBundlePath}">` : ''
+    // Inline CSS content directly (the /assets/ link path doesn't resolve)
+    let cssContent = ''
+    if (record.page.css_bundle_path) {
+      cssContent = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.page.css_bundle_path)
+      if (!cssContent) {
+        cssContent = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.page.css_bundle_path)
+      }
+    }
+    const cssStyle = cssContent ? `<style>${cssContent}</style>` : ''
 
   // 編集UIとの通信用スクリプト
   const editorScript = `
@@ -1110,7 +1158,7 @@ app.get('/api/sections/:sectionId/editable-render', async (req, res) => {
 
     const html = buildRenderDocument(sectionHtml, pageOrigin, {
       skipBase: true,
-      extraHead: `${cssLink}<style>
+      extraHead: `${cssStyle}<style>
   [data-pc-key] { cursor: pointer; transition: outline 0.15s; }
   [data-pc-key]:hover { outline: 2px solid rgba(59,130,246,0.4); }
   [data-pc-selected] { outline: 2px solid #3b82f6 !important; box-shadow: 0 0 0 4px rgba(59,130,246,0.15); }

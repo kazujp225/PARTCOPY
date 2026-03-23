@@ -105,7 +105,8 @@ export default function App() {
           stopPolling()
           // Fetch sections
           const secRes = await fetch(`/api/jobs/${jobId}/sections`)
-          const { sections: secs } = await secRes.json()
+          const secData = await secRes.json()
+          const secs = secData.sections || []
           setSections(prev => {
             const seen = new Set(prev.map(section => section.id))
             const next = [...prev]

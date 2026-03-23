@@ -69,6 +69,23 @@ export function URLInput({ onSubmit, loading, error, jobStatus }: Props) {
           <span>{jobStatus}</span>
         </div>
       )}
+      {jobStatus && (
+        <div className="phase-indicator">
+          {['DL', '検出', '分類', 'TSX', '完了'].map((label, i) => {
+            const currentPhase = jobStatus.includes('TSX') || jobStatus.includes('Claude') ? 3
+              : jobStatus.includes('normalizing') || jobStatus.includes('セクション') ? 2
+              : jobStatus.includes('rendering') || jobStatus.includes('parsed') ? 1
+              : jobStatus.includes('queued') ? 0 : 4
+            const state = i < currentPhase ? 'done' : i === currentPhase ? 'active' : ''
+            return (
+              <div key={label} className={`phase-step ${state}`}>
+                <span className={`phase-dot ${state}`} />
+                <span className="phase-label">{label}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
       {error && <div className="error-msg">{error}</div>}
     </div>
   )

@@ -33,6 +33,7 @@ interface CrawlRunRow extends JsonObject {
   worker_version?: string | null
   error_code?: string | null
   error_message?: string | null
+  status_detail?: string | null
   page_count: number
   section_count: number
   queued_at: string
