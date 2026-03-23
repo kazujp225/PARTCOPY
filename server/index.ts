@@ -1552,6 +1552,90 @@ app.post('/api/export/zip', async (req, res) => {
     // Generate index.html
     const indexHtml = `<!DOCTYPE html>\n<html lang="ja">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>PARTCOPY Export</title>\n</head>\n<body>\n  <div id="root"></div>\n  <script type="module" src="/src/index.tsx"></script>\n</body>\n</html>\n`
 
+    // Generate tsconfig.json
+    const tsconfigJson = JSON.stringify({
+      compilerOptions: {
+        target: 'ES2020',
+        useDefineForClassFields: true,
+        lib: ['ES2020', 'DOM', 'DOM.Iterable'],
+        module: 'ESNext',
+        skipLibCheck: true,
+        moduleResolution: 'bundler',
+        allowImportingTsExtensions: true,
+        isolatedModules: true,
+        moduleDetection: 'force',
+        noEmit: true,
+        jsx: 'react-jsx',
+        strict: true,
+        noUnusedLocals: false,
+        noUnusedParameters: false
+      },
+      include: ['src']
+    }, null, 2)
+
+    // Generate vite.config.ts
+    const viteConfig = `import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+})
+`
+
+    // Generate setup.sh
+    const setupSh = `#!/bin/bash
+echo "================================"
+echo "  PARTCOPY Export セットアップ"
+echo "================================"
+echo ""
+
+# Node.js チェック
+if ! command -v node &> /dev/null; then
+  echo "エラー: Node.js がインストールされていません"
+  echo "https://nodejs.org/ からインストールしてください"
+  exit 1
+fi
+
+echo "1/3 依存関係をインストール中..."
+npm install
+
+echo ""
+echo "2/3 完了！"
+echo ""
+echo "3/3 開発サーバーを起動します..."
+echo "    http://localhost:5173 で確認できます"
+echo ""
+npm run dev
+`
+
+    // Generate README.md
+    const readmeMd = `# PARTCOPY Export
+
+PARTCOPYで生成されたReactプロジェクトです。
+
+## セットアップ（簡単）
+
+\`\`\`bash
+# 方法1: セットアップスクリプト（推奨）
+chmod +x setup.sh
+./setup.sh
+
+# 方法2: 手動
+npm install
+npm run dev
+\`\`\`
+
+ブラウザで http://localhost:5173 を開いて確認してください。
+
+## ビルド（本番用）
+
+\`\`\`bash
+npm run build
+\`\`\`
+
+\`dist/\` フォルダに出力されます。
+`
+
     // Build ZIP
     res.setHeader('Content-Type', 'application/zip')
     res.setHeader('Content-Disposition', 'attachment; filename="partcopy-export.zip"')
@@ -1571,6 +1655,10 @@ app.post('/api/export/zip', async (req, res) => {
 
     archive.append(indexHtml, { name: 'index.html' })
     archive.append(pkgJson, { name: 'package.json' })
+    archive.append(tsconfigJson, { name: 'tsconfig.json' })
+    archive.append(viteConfig, { name: 'vite.config.ts' })
+    archive.append(setupSh, { name: 'setup.sh' })
+    archive.append(readmeMd, { name: 'README.md' })
     archive.append(appTsx, { name: 'src/App.tsx' })
     archive.append(indexTsx, { name: 'src/index.tsx' })
 
