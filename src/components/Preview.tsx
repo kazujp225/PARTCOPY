@@ -9,9 +9,11 @@ interface CanvasItem {
 
 interface Props {
   items: CanvasItem[]
+  onExportZip?: () => void
+  exporting?: boolean
 }
 
-export function Preview({ items }: Props) {
+export function Preview({ items, onExportZip, exporting }: Props) {
   if (items.length === 0) {
     return (
       <div className="preview-container">
@@ -22,8 +24,13 @@ export function Preview({ items }: Props) {
 
   return (
     <div className="preview-container">
-      <div className="preview-mode-bar">
-        <span className="preview-label">プレビュー</span>
+      <div className="preview-header">
+        <h2>プレビュー</h2>
+        {onExportZip && items.length > 0 && (
+          <button className="zip-btn primary" onClick={onExportZip} disabled={exporting}>
+            {exporting ? '出力中...' : '↓ ZIP ダウンロード'}
+          </button>
+        )}
       </div>
       <div className="preview-screenshots">
         {items.map(item => (
