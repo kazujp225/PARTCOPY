@@ -188,6 +188,7 @@ export default function App() {
           })
           setLoading(false)
           setJobStatus(null)
+          setView('editor') // 抽出完了後パーツ一覧に自動遷移
         } else if (job.status === 'failed') {
           stopPolling()
           setError(job.error_message || 'Crawl failed')

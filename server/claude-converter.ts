@@ -8,10 +8,18 @@ import { logger } from './logger.js'
 const CONVERT_PROMPT = `あなたはHTML→React TSXコンバーターです。
 以下のHTMLをReact TSXコンポーネントに変換してください。
 
+【最重要ルール - デザイン完全保持】
+- フォント指定（font-family, font-weight, font-size）は絶対に変更・省略しないこと
+- 色（color, background-color, gradient）は元のまま完全に保持すること
+- レイアウト（display, flexbox, grid, position, margin, padding）は1pxもずれないように再現すること
+- 元サイトのデザインを崩すことは一切許されない
+
 ルール:
 - 元のCSSスタイルをそのまま保持すること（インラインstyleオブジェクトに変換）
+- @font-faceルールがある場合はそのまま保持すること
 - class属性はclassNameに変換
 - imgのaltは保持、自己閉じタグに修正
+- 画像のsrc URLはそのまま保持すること
 - コンポーネント名はSectionComponentとする
 - export default で公開
 - 不要なscriptタグは除去
