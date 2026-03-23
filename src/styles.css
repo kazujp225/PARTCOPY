@@ -228,6 +228,31 @@ body {
   line-height: 1.5;
 }
 
+.auto-crawl-percent {
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.auto-crawl-progress-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--border);
+}
+
+.auto-crawl-progress-fill {
+  height: 100%;
+  background: var(--primary);
+  transition: width 1s ease;
+  border-radius: 0 3px 3px 0;
+}
+
+.auto-crawl-header {
+  position: relative;
+}
+
 .auto-crawl-textarea:focus {
   outline: none;
   border-color: var(--primary);
