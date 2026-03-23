@@ -111,7 +111,7 @@ export function PartsPanel({ sections, onAdd, onRemove, onViewTsx }: Props) {
     <aside className="parts-panel">
       <div className="parts-header">
         <div className="parts-header-row">
-          <h2>パーツ ({sections.length})</h2>
+          <h2>{sections.length}件のパーツ</h2>
           <span className="parts-results-count">{filtered.length}件表示</span>
         </div>
         <div className="parts-management-bar">
@@ -134,13 +134,13 @@ export function PartsPanel({ sections, onAdd, onRemove, onViewTsx }: Props) {
           </select>
         </div>
         <div className="parts-toggle-row">
-          <button className={`feature-toggle ${onlyImages ? 'active' : ''}`} onClick={() => setOnlyImages(prev => !prev)}>
+          <button className={`feature-toggle pill ${onlyImages ? 'active' : ''}`} onClick={() => setOnlyImages(prev => !prev)}>
             IMG
           </button>
-          <button className={`feature-toggle ${onlyCta ? 'active' : ''}`} onClick={() => setOnlyCta(prev => !prev)}>
+          <button className={`feature-toggle pill ${onlyCta ? 'active' : ''}`} onClick={() => setOnlyCta(prev => !prev)}>
             CTA
           </button>
-          <button className={`feature-toggle ${onlyForm ? 'active' : ''}`} onClick={() => setOnlyForm(prev => !prev)}>
+          <button className={`feature-toggle pill ${onlyForm ? 'active' : ''}`} onClick={() => setOnlyForm(prev => !prev)}>
             FORM
           </button>
           {hasActiveFilters && (
@@ -150,7 +150,7 @@ export function PartsPanel({ sections, onAdd, onRemove, onViewTsx }: Props) {
           )}
         </div>
         <div className="parts-filters">
-          <button className={`filter-btn ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
+          <button className={`filter-btn pill ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
             すべて ({sections.length})
           </button>
           {Object.entries(familyCounts)
@@ -158,7 +158,7 @@ export function PartsPanel({ sections, onAdd, onRemove, onViewTsx }: Props) {
             .map(([family, count]) => (
               <button
                 key={family}
-                className={`filter-btn ${filter === family ? 'active' : ''}`}
+                className={`filter-btn pill ${filter === family ? 'active' : ''}`}
                 onClick={() => setFilter(family)}
               >
                 <span className="filter-dot" style={{ background: FAMILY_COLORS[family] || '#94a3b8' }} />
