@@ -118,6 +118,7 @@ export async function searchAndQueue(keyword: string): Promise<{
   // URLリストを返す（キューへの追加はフロントで選択後に行う）
   return {
     expandedKeywords,
-    urls: uniqueUrls
+    urls: uniqueUrls,
+    queued: 0
   }
 }

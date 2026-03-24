@@ -556,6 +556,12 @@ export async function getPageById(pageId: string) {
   return row ? clone(row) : null
 }
 
+export async function getPageByUrl(url: string) {
+  const db = await readDb()
+  const row = db.source_pages.find(page => page.url === url)
+  return row ? clone(row) : null
+}
+
 export async function getSectionsByPage(pageId: string) {
   const db = await readDb()
   const page = db.source_pages.find(row => row.id === pageId)

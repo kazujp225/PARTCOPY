@@ -2,6 +2,8 @@
  * API Server - Lightweight. No Puppeteer.
  * Creates jobs, serves results from Supabase.
  */
+import { createHash } from 'node:crypto'
+import path from 'node:path'
 import express from 'express'
 import cors from 'cors'
 import archiver from 'archiver'
@@ -34,6 +36,16 @@ import { HAS_SUPABASE, supabaseAdmin } from './supabase.js'
 import { STORAGE_BUCKETS } from './storage-config.js'
 import { logger } from './logger.js'
 import { convertHtmlToTsx } from './claude-converter.js'
+import {
+  collectCssAssetUrls,
+  collectHtmlAssetUrls,
+  createSectionScopeClass,
+  parseStoredAssetUrl,
+  rewriteCssAssetUrls,
+  rewriteCssUrls,
+  rewriteHtmlAssetUrls,
+  scopeCss
+} from './render-utils.js'
 
 /**
  * Sanitize error messages before sending to clients.
@@ -198,6 +210,265 @@ function resolveRelativeUrls(html: string, pageOrigin: string): string {
   return result
 }
 
+const PARTCOPY_BASE_CSS = `
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #ffffff;
+}
+
+.pc-preview-page {
+  width: 100%;
+  overflow-x: hidden;
+}
+
+[data-partcopy-section] {
+  display: block;
+  width: 100%;
+}
+`.trim()
+
+interface PreparedSectionRender {
+  sectionId: string
+  blockFamily: string
+  scopeClass: string
+  html: string
+  css: string
+  fontFaceCss: string[]
+}
+
+interface ExportAssetFile {
+  exportPath: string
+  buffer: Buffer
+}
+
+function getPageOrigin(pageUrl?: string | null) {
+  if (!pageUrl) return ''
+  try {
+    return new URL(pageUrl).origin
+  } catch {
+    return ''
+  }
+}
+
+function guessContentTypeFromPath(filePath: string) {
+  const lower = filePath.toLowerCase()
+  if (lower.endsWith('.html')) return 'text/html; charset=utf-8'
+  if (lower.endsWith('.css')) return 'text/css; charset=utf-8'
+  if (lower.endsWith('.js')) return 'application/javascript; charset=utf-8'
+  if (lower.endsWith('.json')) return 'application/json; charset=utf-8'
+  if (lower.endsWith('.svg')) return 'image/svg+xml'
+  if (lower.endsWith('.png')) return 'image/png'
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
+  if (lower.endsWith('.webp')) return 'image/webp'
+  if (lower.endsWith('.gif')) return 'image/gif'
+  if (lower.endsWith('.avif')) return 'image/avif'
+  if (lower.endsWith('.woff')) return 'font/woff'
+  if (lower.endsWith('.woff2')) return 'font/woff2'
+  if (lower.endsWith('.ttf')) return 'font/ttf'
+  if (lower.endsWith('.otf')) return 'font/otf'
+  if (lower.endsWith('.eot')) return 'application/vnd.ms-fontobject'
+  if (lower.endsWith('.mp4')) return 'video/mp4'
+  if (lower.endsWith('.webm')) return 'video/webm'
+  return 'application/octet-stream'
+}
+
+async function readBucketFile(bucket: string, storagePath?: string | null) {
+  if (!storagePath) return null
+
+  if (!HAS_SUPABASE) {
+    try {
+      return await getStoredFileResponse(bucket, storagePath)
+    } catch {
+      return null
+    }
+  }
+
+  const { data, error } = await supabaseAdmin.storage.from(bucket).download(storagePath)
+  if (!data || error) return null
+
+  return {
+    buffer: Buffer.from(await data.arrayBuffer()),
+    contentType: data.type || guessContentTypeFromPath(storagePath)
+  }
+}
+
+async function loadSectionCssBundle(cssBundlePath?: string | null) {
+  if (!cssBundlePath) return ''
+
+  let cssContent = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, cssBundlePath)
+  if (!cssContent) {
+    cssContent = await readBucketText(STORAGE_BUCKETS.RAW_HTML, cssBundlePath)
+  }
+
+  return rewriteCssAssetUrls(cssContent, cssBundlePath)
+}
+
+function renderPreparedSection(prepared: PreparedSectionRender) {
+  return `<section class="${prepared.scopeClass}" data-partcopy-section="${prepared.sectionId}">${prepared.html}</section>`
+}
+
+function buildStyleTags(cssBlocks: string[]) {
+  return cssBlocks
+    .filter((block) => block.trim().length > 0)
+    .map((block) => `<style>${block}</style>`)
+    .join('')
+}
+
+function dedupeStrings(values: string[]) {
+  return [...new Set(values)]
+}
+
+function dedupeCssBlocks(blocks: string[]) {
+  const seen = new Set<string>()
+  const unique: string[] = []
+
+  for (const block of blocks) {
+    const normalized = block.replace(/\s+/g, ' ').trim()
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    unique.push(block)
+  }
+
+  return unique
+}
+
+async function prepareSectionRender(sectionId: string): Promise<PreparedSectionRender | null> {
+  const record = await getRenderContext(sectionId)
+  if (!record?.section) return null
+  if (!record.section.raw_html_storage_path && !record.section.sanitized_html_storage_path) return null
+
+  let html = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.section.raw_html_storage_path)
+  if (!html) {
+    html = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.section.sanitized_html_storage_path)
+  }
+  if (!html) return null
+
+  const pageOrigin = getPageOrigin(record.page?.url)
+  const scopeClass = createSectionScopeClass(sectionId)
+  const cssBundle = await loadSectionCssBundle(record.page?.css_bundle_path)
+  const { scopedCss, fontFaceCss } = scopeCss(cssBundle, scopeClass)
+
+  return {
+    sectionId,
+    blockFamily: record.section.block_family || 'section',
+    scopeClass,
+    html: resolveRelativeUrls(html, pageOrigin),
+    css: scopedCss,
+    fontFaceCss
+  }
+}
+
+function parseSectionIdsQuery(value: unknown) {
+  if (typeof value !== 'string') return []
+  return value
+    .split(',')
+    .map((sectionId) => sectionId.trim())
+    .filter(Boolean)
+}
+
+function getPathnameFromUrl(sourceUrl: string) {
+  try {
+    return new URL(sourceUrl).pathname
+  } catch {
+    return sourceUrl
+  }
+}
+
+function extensionFromContentType(contentType: string) {
+  const baseType = contentType.split(';')[0].trim().toLowerCase()
+  const map: Record<string, string> = {
+    'application/javascript': '.js',
+    'application/json': '.json',
+    'application/vnd.ms-fontobject': '.eot',
+    'font/otf': '.otf',
+    'font/ttf': '.ttf',
+    'font/woff': '.woff',
+    'font/woff2': '.woff2',
+    'image/avif': '.avif',
+    'image/gif': '.gif',
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/svg+xml': '.svg',
+    'image/webp': '.webp',
+    'text/css': '.css',
+    'text/html': '.html',
+    'video/mp4': '.mp4',
+    'video/webm': '.webm'
+  }
+
+  return map[baseType] || ''
+}
+
+function sanitizeExportStem(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/\.[a-z0-9]+$/i, '')
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+}
+
+function buildExportAssetFileName(key: string, sourceUrl: string, contentType: string, fileNameHint?: string | null) {
+  const candidateName = fileNameHint || path.posix.basename(getPathnameFromUrl(sourceUrl)) || 'asset'
+  const ext = path.posix.extname(candidateName) || extensionFromContentType(contentType)
+  const stem = sanitizeExportStem(candidateName) || 'asset'
+  const hash = createHash('sha1').update(key).digest('hex').slice(0, 10)
+  return `${stem}-${hash}${ext}`
+}
+
+function escapeTemplateLiteral(value: string) {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/`/g, '\\`')
+    .replace(/\$\{/g, '\\${')
+}
+
+function toPascalCase(value: string) {
+  return value
+    .replace(/[^a-zA-Z0-9_]+/g, '_')
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('') || 'Section'
+}
+
+async function loadExportAssetSource(sourceUrl: string) {
+  const storedRef = parseStoredAssetUrl(sourceUrl)
+  if (storedRef) {
+    const buckets = dedupeStrings([storedRef.bucket, STORAGE_BUCKETS.RAW_HTML, STORAGE_BUCKETS.SANITIZED_HTML])
+    for (const bucket of buckets) {
+      const file = await readBucketFile(bucket, storedRef.storagePath)
+      if (file) {
+        return {
+          key: `${bucket}:${storedRef.storagePath}`,
+          fileNameHint: path.posix.basename(storedRef.storagePath),
+          buffer: file.buffer,
+          contentType: file.contentType
+        }
+      }
+    }
+  }
+
+  if (!/^https?:\/\//i.test(sourceUrl)) return null
+
+  try {
+    const response = await fetch(sourceUrl)
+    if (!response.ok) return null
+    return {
+      key: `url:${sourceUrl}`,
+      fileNameHint: path.posix.basename(getPathnameFromUrl(sourceUrl)),
+      buffer: Buffer.from(await response.arrayBuffer()),
+      contentType: response.headers.get('content-type') || guessContentTypeFromPath(sourceUrl)
+    }
+  } catch {
+    return null
+  }
+}
+
 async function readBucketText(bucket: string, storagePath?: string | null) {
   if (!storagePath) return ''
 
@@ -329,7 +600,7 @@ async function getRenderContext(sectionId: string) {
 
   const { data: section } = await supabaseAdmin
     .from('source_sections')
-    .select('id, page_id, raw_html_storage_path, sanitized_html_storage_path')
+    .select('id, page_id, raw_html_storage_path, sanitized_html_storage_path, block_family')
     .eq('id', sectionId)
     .single()
 
@@ -673,7 +944,7 @@ async function getDefaultVariantRecord() {
 // ============================================================
 app.get('/assets/:siteId/:jobId/*', async (req, res) => {
   const { siteId, jobId } = req.params
-  const filePath = req.params[0]
+  const filePath = (req.params as Record<string, string>)[0]
   const storagePath = `${siteId}/${jobId}/${filePath}`
 
   // Determine content type from extension
@@ -849,66 +1120,63 @@ app.get('/api/jobs/:id/sections', async (req, res) => {
 app.get('/api/sections/:sectionId/render', async (req, res) => {
   const { sectionId } = req.params
   try {
-    const record = await getRenderContext(sectionId)
-    if (!record?.section) {
+    const prepared = await prepareSectionRender(sectionId)
+    if (!prepared) {
       res.status(404).send('Section not found')
       return
     }
 
-    if (!record.section.raw_html_storage_path && !record.section.sanitized_html_storage_path) {
-      res.status(404).send('Section not found')
-      return
-    }
-
-    let pageOrigin = ''
-    try { if (record.page.url) pageOrigin = new URL(record.page.url).origin } catch {}
-
-    // Prefer raw HTML (small, with clean /assets/ URLs)
-    let storedHtml = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.section.raw_html_storage_path)
-    if (!storedHtml) {
-      storedHtml = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.section.sanitized_html_storage_path)
-    }
-
-    if (!storedHtml) {
-      res.status(404).send('HTML not found')
-      return
-    }
-
-    // Resolve any remaining relative URLs to absolute (instead of <base> which breaks /assets/ paths)
-    storedHtml = resolveRelativeUrls(storedHtml, pageOrigin)
-
-    // Inline CSS content directly (the /assets/ link path doesn't resolve)
-    let cssContent = ''
-    if (record.page.css_bundle_path) {
-      cssContent = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.page.css_bundle_path)
-      if (!cssContent) {
-        cssContent = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.page.css_bundle_path)
-      }
-    }
-    // Rewrite relative font/image URLs in CSS to absolute /assets/ paths
-    if (cssContent && record.page.css_bundle_path) {
-      const assetBase = '/assets/' + record.page.css_bundle_path.replace(/\/[^/]+$/, '/')
-      cssContent = cssContent.replace(
-        /url\(\s*(['"]?)((?:(?!\1\)).)*?)\1\s*\)/gi,
-        (match, q, rawPath) => {
-          const trimmed = rawPath.trim()
-          // Skip data URIs, absolute URLs, already-prefixed paths
-          if (!trimmed || /^(data:|https?:\/\/|\/\/|\/assets\/)/i.test(trimmed)) {
-            return match
-          }
-          return `url(${q}${assetBase}${trimmed}${q})`
-        }
-      )
-    }
-    const cssStyle = cssContent ? `<style>${cssContent}</style>` : ''
-
-    const html = buildRenderDocument(storedHtml, pageOrigin, { extraHead: cssStyle, skipBase: true })
+    const html = buildRenderDocument(renderPreparedSection(prepared), '', {
+      skipBase: true,
+      extraHead: buildStyleTags([
+        PARTCOPY_BASE_CSS,
+        ...prepared.fontFaceCss,
+        prepared.css
+      ])
+    })
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache')
     res.send(html)
   } catch (err: any) {
     res.status(500).send('Render failed')
+  }
+})
+
+// ============================================================
+// Preview: Render merged sections in a single document
+// ============================================================
+app.get('/api/preview/merged', async (req, res) => {
+  const sectionIds = parseSectionIdsQuery(req.query.sections)
+  if (sectionIds.length === 0) {
+    res.status(400).json({ error: 'sections query is required' })
+    return
+  }
+
+  try {
+    const preparedSections = (
+      await Promise.all(sectionIds.map((sectionId) => prepareSectionRender(sectionId)))
+    ).filter((section): section is PreparedSectionRender => Boolean(section))
+
+    if (preparedSections.length === 0) {
+      res.status(404).send('No sections found')
+      return
+    }
+
+    const mergedHtml = preparedSections.map(renderPreparedSection).join('\n')
+    const mergedCss = preparedSections.map((section) => section.css)
+    const mergedFontFaces = dedupeCssBlocks(preparedSections.flatMap((section) => section.fontFaceCss))
+
+    const html = buildRenderDocument(`<main class="pc-preview-page">${mergedHtml}</main>`, '', {
+      skipBase: true,
+      extraHead: buildStyleTags([PARTCOPY_BASE_CSS, ...mergedFontFaces, ...mergedCss])
+    })
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.send(html)
+  } catch (err: any) {
+    res.status(500).send('Merged preview failed')
   }
 })
 
@@ -1096,6 +1364,106 @@ app.put('/api/sections/:sectionId/html', async (req, res) => {
       )
     }
     res.json({ ok: true })
+  } catch (err: any) {
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+// ============================================================
+// Section: Create custom (手動追加)
+// ============================================================
+app.post('/api/sections/custom', async (req, res) => {
+  const { html, blockFamily, textSummary } = req.body
+  if (typeof html !== 'string' || html.trim().length === 0) {
+    res.status(400).json({ error: 'html must be a non-empty string' })
+    return
+  }
+  try {
+    const { randomUUID } = await import('crypto')
+    const sectionId = randomUUID()
+    const storagePath = `custom/${sectionId}/raw.html`
+    const family = blockFamily || 'CUSTOM'
+    const summary = textSummary || html.replace(/<[^>]*>/g, '').slice(0, 500)
+
+    // カスタムセクション用のダミーサイト・ページを取得 or 作成
+    const customDomain = 'custom.local'
+
+    if (HAS_SUPABASE) {
+      // Ensure custom site exists
+      let { data: site } = await supabaseAdmin.from('source_sites').select('id').eq('normalized_domain', customDomain).single()
+      if (!site) {
+        const { data: newSite, error: siteErr } = await supabaseAdmin.from('source_sites').insert({ normalized_domain: customDomain, homepage_url: 'custom://local' }).select('id').single()
+        if (siteErr) throw new Error(siteErr.message)
+        site = newSite
+      }
+      // Ensure custom page exists
+      let { data: page } = await supabaseAdmin.from('source_pages').select('id').eq('url', 'custom://local').single()
+      if (!page) {
+        // Need a crawl_run first
+        const { data: run, error: runErr } = await supabaseAdmin.from('crawl_runs').insert({ site_id: site!.id, status: 'done', trigger_type: 'manual' }).select('id').single()
+        if (runErr) throw new Error(runErr.message)
+        const { data: newPage, error: pageErr } = await supabaseAdmin.from('source_pages').insert({ crawl_run_id: run!.id, url: 'custom://local', path: '/', title: 'Custom Sections', site_id: site!.id }).select('id').single()
+        if (pageErr) throw new Error(pageErr.message)
+        page = newPage
+      }
+
+      const buffer = Buffer.from(html, 'utf-8')
+      const { error: uploadErr } = await supabaseAdmin.storage
+        .from(STORAGE_BUCKETS.RAW_HTML)
+        .upload(storagePath, buffer, { contentType: 'text/html', upsert: true })
+      if (uploadErr) throw new Error(uploadErr.message)
+
+      const { data, error } = await supabaseAdmin
+        .from('source_sections')
+        .insert({
+          id: sectionId,
+          page_id: page!.id,
+          site_id: site!.id,
+          block_family: family,
+          classifier_type: 'manual',
+          classifier_confidence: 1.0,
+          raw_html_storage_path: storagePath,
+          text_summary: summary,
+          tag_name: 'section',
+          order_index: 0,
+          features_jsonb: {}
+        })
+        .select('*')
+        .single()
+      if (error) throw new Error(error.message)
+      res.json({ section: data })
+    } else {
+      const { writeStoredFile, createSourceSection, createSourcePage, upsertSourceSite: localUpsertSite, createCrawlRun: localCreateRun } = await import('./local-store.js')
+
+      // Ensure custom site + page
+      const site = await localUpsertSite({
+        normalized_domain: customDomain,
+        homepage_url: 'custom://local',
+        status: 'done'
+      })
+      const { getPageByUrl } = await import('./local-store.js')
+      let page: any = null
+      try { page = await getPageByUrl?.('custom://local') } catch {}
+      if (!page) {
+        const run = await localCreateRun({ site_id: site.id, trigger_type: 'manual', status: 'done' })
+        page = await createSourcePage({ crawl_run_id: run.id, url: 'custom://local', title: 'Custom Sections', site_id: site.id } as any)
+      }
+
+      await writeStoredFile(STORAGE_BUCKETS.RAW_HTML, storagePath, Buffer.from(html, 'utf-8'), 'text/html')
+      const row = await createSourceSection({
+        page_id: page.id,
+        site_id: site.id,
+        block_family: family,
+        classifier_type: 'manual',
+        classifier_confidence: 1.0,
+        raw_html_storage_path: storagePath,
+        text_summary: summary,
+        tag_name: 'section',
+        order_index: 0,
+        features_jsonb: {}
+      } as any)
+      res.json({ section: row })
+    }
   } catch (err: any) {
     res.status(500).json({ error: safeErrorMessage(err) })
   }
@@ -1413,8 +1781,23 @@ app.post('/api/sections/:sectionId/convert-tsx', async (req, res) => {
       blockFamily = section?.block_family
     }
 
-    const tsx = await convertHtmlToTsx(html, blockFamily)
-    res.json({ tsx, blockFamily })
+    // Load CSS and scope it
+    const scopeClass = createSectionScopeClass(sectionId)
+    const cssBundle = await loadSectionCssBundle(ctx.page?.css_bundle_path)
+    const { scopedCss, fontFaceCss } = scopeCss(cssBundle, scopeClass)
+    const allCss = [...fontFaceCss, scopedCss].filter(Boolean).join('\n')
+
+    // Wrap HTML with scope class
+    const scopedHtml = `<div className="${scopeClass}">\n${html}\n</div>`
+
+    const tsx = await convertHtmlToTsx(scopedHtml, blockFamily)
+
+    // Inject scoped CSS into the TSX component
+    const cssComment = allCss
+      ? `\n// Scoped CSS for this section\nconst scopedCss = ${JSON.stringify(allCss)};\n`
+      : ''
+
+    res.json({ tsx: cssComment + tsx, blockFamily, scopeClass })
   } catch (err: any) {
     logger.error('TSX conversion failed', { sectionId, error: err.message })
     res.status(500).json({ error: safeErrorMessage(err) })
@@ -1473,72 +1856,88 @@ app.post('/api/export/zip', async (req, res) => {
   }
 
   try {
-    const components: { name: string; tsx: string; family: string }[] = []
-
-    for (let i = 0; i < sectionIds.length; i++) {
-      const sectionId = sectionIds[i]
-      let tsxPath: string | undefined
-      let blockFamily = 'section'
-
-      if (HAS_SUPABASE) {
-        const { data } = await supabaseAdmin
-          .from('source_sections')
-          .select('tsx_code_storage_path, block_family')
-          .eq('id', sectionId)
-          .single()
-        tsxPath = data?.tsx_code_storage_path
-        blockFamily = data?.block_family || 'section'
-      } else {
-        const section = await getSection(sectionId)
-        tsxPath = section?.tsx_code_storage_path
-        blockFamily = section?.block_family || 'section'
-      }
-
-      let tsx = ''
-      // キャッシュ済みTSXがあればそれを使用
-      if (tsxPath) {
-        tsx = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, tsxPath)
-      }
-
-      // なければHTMLをCSS付きでコンポーネント化
-      if (!tsx) {
-        const ctx = await getRenderContext(sectionId)
-        let html = ''
-        let cssContent = ''
-        if (ctx) {
-          html = await readBucketText(STORAGE_BUCKETS.RAW_HTML, ctx.section.raw_html_storage_path) || ''
-          // 元サイトのCSSバンドルを取得
-          if (ctx.page?.css_bundle_path) {
-            cssContent = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, ctx.page.css_bundle_path) || ''
-            if (!cssContent) cssContent = await readBucketText(STORAGE_BUCKETS.RAW_HTML, ctx.page.css_bundle_path) || ''
-          }
-        }
-        if (html) {
-          const safeName = blockFamily.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join('')
-          const escapedHtml = html.replace(/`/g, '\\`').replace(/\$/g, '\\$')
-          const escapedCss = cssContent.replace(/`/g, '\\`').replace(/\$/g, '\\$')
-          tsx = `export default function ${safeName}Section${i}() {\n  return (\n    <>\n      ${escapedCss ? `<style dangerouslySetInnerHTML={{ __html: \`${escapedCss}\` }} />` : ''}\n      <div dangerouslySetInnerHTML={{ __html: \`${escapedHtml}\` }} />\n    </>\n  )\n}\n`
-        }
-      }
-
-      const componentName = blockFamily
-        .replace(/[^a-zA-Z0-9_]/g, '')
-        .split('_')
-        .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
-        .join('') + 'Section' + (i > 0 ? i : '')
-
-      components.push({ name: componentName, tsx, family: blockFamily })
+    const preparedSections: PreparedSectionRender[] = []
+    for (const sectionId of sectionIds) {
+      const prepared = await prepareSectionRender(sectionId)
+      if (prepared) preparedSections.push(prepared)
     }
 
-    // Generate App.tsx
-    const imports = components.map(c => `import ${c.name} from './components/${c.name}'`).join('\n')
-    const renders = components.map(c => `      <${c.name} />`).join('\n')
-    const appTsx = `import React from 'react'\n${imports}\n\nexport default function App() {\n  return (\n    <div>\n${renders}\n    </div>\n  )\n}\n`
+    if (preparedSections.length === 0) {
+      res.status(404).json({ error: 'No exportable sections found' })
+      return
+    }
 
-    // Generate index.tsx (with CSS import)
-    const indexTsx = `import React from 'react'\nimport ReactDOM from 'react-dom/client'\nimport './index.css'\nimport App from './App'\n\nReactDOM.createRoot(document.getElementById('root')!).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>\n)\n`
+    const exportAssetPathBySource = new Map<string, string>()
+    const exportAssetPathByKey = new Map<string, string>()
+    const exportAssets: ExportAssetFile[] = []
+    const componentCounts = new Map<string, number>()
+    const globalFontFaceCss: string[] = []
 
-    // Generate package.json (with Tailwind CSS)
+    const ensureExportAsset = async (sourceUrl: string) => {
+      if (exportAssetPathBySource.has(sourceUrl)) {
+        return exportAssetPathBySource.get(sourceUrl)
+      }
+
+      const resolvedAsset = await loadExportAssetSource(sourceUrl)
+      if (!resolvedAsset) return undefined
+
+      let exportPath = exportAssetPathByKey.get(resolvedAsset.key)
+      if (!exportPath) {
+        const fileName = buildExportAssetFileName(
+          resolvedAsset.key,
+          sourceUrl,
+          resolvedAsset.contentType,
+          resolvedAsset.fileNameHint
+        )
+        exportPath = `/assets/${fileName}`
+        exportAssetPathByKey.set(resolvedAsset.key, exportPath)
+        exportAssets.push({
+          exportPath,
+          buffer: resolvedAsset.buffer
+        })
+      }
+
+      exportAssetPathBySource.set(sourceUrl, exportPath)
+      return exportPath
+    }
+
+    const components: { name: string; tsx: string }[] = []
+
+    for (const prepared of preparedSections) {
+      const sectionAssetUrls = dedupeStrings([
+        ...collectHtmlAssetUrls(prepared.html),
+        ...collectCssAssetUrls(prepared.css),
+        ...prepared.fontFaceCss.flatMap((block) => collectCssAssetUrls(block))
+      ])
+
+      for (const sourceUrl of sectionAssetUrls) {
+        await ensureExportAsset(sourceUrl)
+      }
+
+      const html = rewriteHtmlAssetUrls(prepared.html, (url) => exportAssetPathBySource.get(url))
+      const css = rewriteCssUrls(prepared.css, (url) => exportAssetPathBySource.get(url))
+      const fontFaceCss = prepared.fontFaceCss.map((block) => rewriteCssUrls(block, (url) => exportAssetPathBySource.get(url)))
+      globalFontFaceCss.push(...fontFaceCss)
+
+      const componentBaseName = `${toPascalCase(prepared.blockFamily)}Section`
+      const duplicateIndex = componentCounts.get(componentBaseName) || 0
+      componentCounts.set(componentBaseName, duplicateIndex + 1)
+      const componentName = duplicateIndex === 0 ? componentBaseName : `${componentBaseName}${duplicateIndex}`
+
+      const escapedHtml = escapeTemplateLiteral(html)
+      const escapedCss = escapeTemplateLiteral(css)
+
+      const tsx = `export default function ${componentName}() {\n  return (\n    <>\n${escapedCss ? `      <style dangerouslySetInnerHTML={{ __html: \`${escapedCss}\` }} />\n` : ''}      <section className="${prepared.scopeClass}" data-partcopy-section="${prepared.sectionId}" dangerouslySetInnerHTML={{ __html: \`${escapedHtml}\` }} />\n    </>\n  )\n}\n`
+
+      components.push({ name: componentName, tsx })
+    }
+
+    const imports = components.map((component) => `import ${component.name} from './components/${component.name}'`).join('\n')
+    const renders = components.map((component) => `      <${component.name} />`).join('\n')
+    const appTsx = `${imports}\n\nexport default function App() {\n  return (\n    <main className="pc-preview-page">\n${renders}\n    </main>\n  )\n}\n`
+
+    const indexTsx = `import ReactDOM from 'react-dom/client'\nimport './index.css'\nimport App from './App'\n\nReactDOM.createRoot(document.getElementById('root')!).render(<App />)\n`
+
     const pkgJson = JSON.stringify({
       name: 'partcopy-export',
       private: true,
@@ -1556,23 +1955,17 @@ app.post('/api/export/zip', async (req, res) => {
         '@types/react': '^18.3.12',
         '@types/react-dom': '^18.3.1',
         '@vitejs/plugin-react': '^4.3.4',
-        tailwindcss: '^4.0.0',
-        '@tailwindcss/vite': '^4.0.0',
         typescript: '^5.6.0',
         vite: '^6.0.0'
       }
     }, null, 2)
 
-    // Generate index.html (with Google Fonts)
     const indexHtml = `<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PARTCOPY Export</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700;900&family=Noto+Serif+JP:wght@400;700;900&display=swap" rel="stylesheet">
 </head>
 <body>
   <div id="root"></div>
@@ -1581,7 +1974,6 @@ app.post('/api/export/zip', async (req, res) => {
 </html>
 `
 
-    // Generate tsconfig.json
     const tsconfigJson = JSON.stringify({
       compilerOptions: {
         target: 'ES2020',
@@ -1602,49 +1994,9 @@ app.post('/api/export/zip', async (req, res) => {
       include: ['src']
     }, null, 2)
 
-    // Generate vite.config.ts (with Tailwind)
-    const viteConfig = `import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
+    const viteConfig = `import { defineConfig } from 'vite'\nimport react from '@vitejs/plugin-react'\n\nexport default defineConfig({\n  plugins: [react()],\n})\n`
 
-export default defineConfig({
-  plugins: [react(), tailwindcss()],
-})
-`
-
-    // Generate src/index.css (Tailwind + custom colors)
-    const indexCss = `@import "tailwindcss";
-
-@theme {
-  --color-z-black: #1a1a1a;
-  --color-z-blue: #2563eb;
-  --color-z-blue-dark: #1e40af;
-  --color-z-cyan: #06b6d4;
-  --color-z-purple: #7c3aed;
-  --color-z-red: #ef4444;
-  --font-sans: 'Noto Sans JP', system-ui, sans-serif;
-  --font-serif: 'Noto Serif JP', serif;
-}
-
-.stroke-text-blue {
-  -webkit-text-stroke: 2px #2563eb;
-  color: transparent;
-}
-
-.stroke-text-gray {
-  -webkit-text-stroke: 1px #4b5563;
-  color: transparent;
-}
-
-@keyframes scanline {
-  0% { top: -100%; }
-  100% { top: 100%; }
-}
-
-.animate-scanline {
-  animation: scanline 3s linear infinite;
-}
-`
+    const indexCss = `${dedupeCssBlocks([PARTCOPY_BASE_CSS, ...globalFontFaceCss]).join('\n\n')}\n`
 
     // Generate setup.sh
     const setupSh = `#!/bin/bash
@@ -1675,7 +2027,7 @@ npm run dev
     // Generate README.md
     const readmeMd = `# PARTCOPY Export
 
-PARTCOPYで生成されたReactプロジェクトです。
+PARTCOPYで生成されたReactプロジェクトです。画像・フォントなどのアセットは \`public/assets/\` に同梱されています。
 
 ## セットアップ（簡単）
 
@@ -1691,6 +2043,12 @@ npm run dev
 
 ブラウザで http://localhost:5173 を開いて確認してください。
 
+## 構成
+
+- \`src/components/\` に各セクションのコンポーネントがあります
+- \`public/assets/\` に画像・フォント・背景画像が入っています
+- \`src/index.css\` には共通のベースCSSと重複排除済みの \`@font-face\` があります
+
 ## ビルド（本番用）
 
 \`\`\`bash
@@ -1703,7 +2061,7 @@ npm run build
     // Generate CLAUDE.md (Claude Code用の指示書)
     const claudeMd = `# CLAUDE.md
 
-このプロジェクトはPARTCOPYで生成されたReact + TypeScript + Tailwind CSSのWebサイトです。
+このプロジェクトはPARTCOPYで生成されたReact + TypeScript + ViteのWebサイトです。
 
 ## 起動方法
 \`\`\`bash
@@ -1715,38 +2073,26 @@ http://localhost:5173 でブラウザ確認できます。
 ## 技術スタック
 - React 18 + TypeScript
 - Vite 6
-- Tailwind CSS 4（@tailwindcss/vite）
-- フォント: Noto Sans JP / Noto Serif JP（Google Fonts）
+- アセットは \`public/assets/\` にローカル同梱
 
 ## プロジェクト構造
 - \`src/App.tsx\` — メインコンポーネント。全セクションをここでimportして縦に並べている
 - \`src/components/\` — 各セクションのTSXコンポーネント
-- \`src/index.css\` — Tailwind設定 + カスタムカラー（z-black, z-blue, z-cyan, z-purple, z-red）
-- \`vite.config.ts\` — Vite + React + Tailwind設定
-
-## カスタムカラー
-- \`z-black\`: #1a1a1a
-- \`z-blue\`: #2563eb / \`z-blue-dark\`: #1e40af
-- \`z-cyan\`: #06b6d4
-- \`z-purple\`: #7c3aed
-- \`z-red\`: #ef4444
-
-## カスタムCSS
-- \`.stroke-text-blue\` — 青い縁取りテキスト
-- \`.stroke-text-gray\` — グレー縁取りテキスト
-- \`.animate-scanline\` — スキャンラインアニメーション
+- \`src/index.css\` — ベースCSS + 重複排除済みフォント定義
+- \`public/assets/\` — 画像・フォント・背景画像
+- \`vite.config.ts\` — Vite + React 設定
 
 ## よくある作業
 - 「テキストを変えて」→ 各コンポーネント内の日本語テキストを編集
-- 「色を変えて」→ src/index.css の @theme 内のカラー変数を変更
+- 「画像を差し替えて」→ \`public/assets/\` 内の該当ファイルを差し替える
 - 「セクションを並び替えて」→ src/App.tsx のコンポーネント順序を変更
 - 「セクションを削除して」→ src/App.tsx からimportとJSXを削除
 - 「ビルドして」→ npm run build → dist/ に出力
 - 「デプロイして」→ dist/ をVercel/Netlify等にアップロード
 
 ## 注意
-- コンポーネント内の画像URLがSupabase署名URLの場合、期限切れの可能性あり
-- Tailwindのカスタムクラス（z-*）は src/index.css で定義済み
+- セクションCSSは \`.pc-sec-*\` でスコープされています
+- 画像URLはローカルファイルに変換済みです
 `
 
     // Build ZIP
@@ -1779,6 +2125,10 @@ http://localhost:5173 でブラウザ確認できます。
 
     for (const comp of components) {
       archive.append(comp.tsx, { name: `src/components/${comp.name}.tsx` })
+    }
+
+    for (const asset of exportAssets) {
+      archive.append(asset.buffer, { name: `public${asset.exportPath}`.replace(/^\//, '') })
     }
 
     await archive.finalize()

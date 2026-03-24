@@ -53,6 +53,7 @@ export default function App() {
   const [selectedUrls, setSelectedUrls] = useState<Set<string>>(new Set())
   const [newProjectName, setNewProjectName] = useState('')
   const [showNewProject, setShowNewProject] = useState(false)
+  const [saveToast, setSaveToast] = useState<{ projectId: string; projectName: string } | null>(null)
 
   // Persist canvas to localStorage + Supabase project (debounced)
   useEffect(() => {
@@ -401,9 +402,37 @@ export default function App() {
   }
 
   const handleSaveProject = async () => {
-    if (!activeProjectId) return
-    await fetch(`/api/projects/${activeProjectId}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({canvas_json: canvas}) }).catch(() => {})
-    alert('保存しました')
+    let projectId = activeProjectId
+    let projectName = projectList.find(p => p.id === projectId)?.name || ''
+
+    // プロジェクトが未作成の場合は自動作成
+    if (!projectId) {
+      const name = prompt('プロジェクト名を入力してください', '新規プロジェクト')
+      if (!name) return
+      try {
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        })
+        if (!res.ok) return
+        const { project } = await res.json()
+        setProjectList(prev => [project, ...prev])
+        setActiveProjectId(project.id)
+        projectId = project.id
+        projectName = project.name
+      } catch { return }
+    }
+
+    await fetch(`/api/projects/${projectId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ canvas_json: canvas })
+    }).catch(() => {})
+
+    // トースト通知を表示
+    setSaveToast({ projectId: projectId!, projectName })
+    setTimeout(() => setSaveToast(null), 5000)
   }
 
   const handleDeleteProject = async (projectId: string) => {
@@ -507,7 +536,7 @@ export default function App() {
       {view === 'editor' && (
         <div className="editor-layout">
           <PartsPanel sections={filteredSections} onAdd={addToCanvas} onRemove={removeSection} onViewTsx={handleViewTsx} />
-          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onExportZip={handleExportZip} exporting={exporting} onSaveProject={activeProjectId ? handleSaveProject : undefined} onNewProject={() => setShowNewProject(true)} />
+          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onExportZip={handleExportZip} exporting={exporting} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} />
         </div>
       )}
 
@@ -521,6 +550,24 @@ export default function App() {
           familyName={tsxResult.familyName}
           onClose={() => setTsxResult(null)}
         />
+      )}
+
+      {saveToast && (
+        <div className="save-toast">
+          <span className="save-toast-check">&#10003;</span>
+          <span>「{saveToast.projectName}」に保存しました</span>
+          <button
+            className="save-toast-btn"
+            onClick={() => {
+              handleSwitchProject(saveToast.projectId)
+              setView('preview')
+              setSaveToast(null)
+            }}
+          >
+            プレビューで見る &rarr;
+          </button>
+          <button className="save-toast-close" onClick={() => setSaveToast(null)}>&times;</button>
+        </div>
       )}
 
       {loading && (
