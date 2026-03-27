@@ -5,6 +5,7 @@ import path from 'node:path'
 const LOCAL_ROOT = path.resolve(process.cwd(), '.partcopy')
 const STORAGE_ROOT = path.join(LOCAL_ROOT, 'storage')
 const DB_PATH = path.join(LOCAL_ROOT, 'db.json')
+const NODES_PATH = path.join(LOCAL_ROOT, 'nodes.json')
 const LOCK_PATH = path.join(LOCAL_ROOT, '.lock')
 
 type JsonObject = Record<string, any>
@@ -280,15 +281,37 @@ async function releaseLock() {
   await rm(LOCK_PATH, { recursive: true, force: true })
 }
 
+async function readNodes(): Promise<SectionNodeRow[]> {
+  try {
+    const raw = await readFile(NODES_PATH, 'utf-8')
+    return JSON.parse(raw) as SectionNodeRow[]
+  } catch {
+    return []
+  }
+}
+
+async function writeNodes(nodes: SectionNodeRow[]) {
+  const tempPath = `${NODES_PATH}.tmp`
+  await writeFile(tempPath, JSON.stringify(nodes), 'utf-8')
+  await rename(tempPath, NODES_PATH)
+}
+
 async function readDb(): Promise<LocalDB> {
   await ensureLocalRoot()
   const raw = await readFile(DB_PATH, 'utf-8')
   const parsed = JSON.parse(raw) as Partial<LocalDB>
   const defaults = createDefaultDb()
 
+  // section_nodes は別ファイルから遅延読み込み（メインDBに残っていれば移行）
+  let nodes = parsed.section_nodes || []
+  if (nodes.length === 0) {
+    nodes = await readNodes()
+  }
+
   return {
     ...defaults,
     ...parsed,
+    section_nodes: nodes,
     block_families: parsed.block_families?.length ? parsed.block_families : defaults.block_families,
     block_variants: parsed.block_variants?.length ? parsed.block_variants : defaults.block_variants
   }
@@ -296,8 +319,14 @@ async function readDb(): Promise<LocalDB> {
 
 async function writeDb(db: LocalDB) {
   await ensureLocalRoot()
+
+  // section_nodes を別ファイルに書き出し、メインDBからは除外
+  const nodes = db.section_nodes
+  await writeNodes(nodes)
+
+  const dbWithoutNodes = { ...db, section_nodes: [] as SectionNodeRow[] }
   const tempPath = `${DB_PATH}.tmp`
-  await writeFile(tempPath, JSON.stringify(db, null, 2), 'utf-8')
+  await writeFile(tempPath, JSON.stringify(dbWithoutNodes, null, 2), 'utf-8')
   await rename(tempPath, DB_PATH)
 }
 
