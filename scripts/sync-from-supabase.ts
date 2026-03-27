@@ -6,8 +6,8 @@ import { createClient } from '@supabase/supabase-js'
 import { mkdir, writeFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 
-const SB_URL = 'https://vxgsdkyeyaejhhlwfnlh.supabase.co'
-const SB_KEY = 'REDACTED_SERVICE_ROLE_KEY'
+const SB_URL = process.env.SUPABASE_URL || ''
+const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 
 const sb = createClient(SB_URL, SB_KEY, { auth: { persistSession: false } })
 
