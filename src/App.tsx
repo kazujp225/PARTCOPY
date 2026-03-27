@@ -497,8 +497,8 @@ export default function App() {
           {projectList.map(p => (
             <button
               key={p.id}
-              className={`sidebar-saved-btn ${p.id === activeProjectId ? 'active' : ''}`}
-              onClick={() => handleSwitchProject(p.id)}
+              className={`sidebar-saved-btn ${p.id === activeProjectId && view === 'project-detail' ? 'active' : ''}`}
+              onClick={() => { setActiveProjectId(p.id); setCanvas(p.canvas_json || []); setView('project-detail' as any) }}
             >
               <span className="sidebar-saved-name">{p.name}</span>
               <span className="sidebar-saved-meta">{p.canvas_json?.length || 0}パーツ</span>
@@ -606,6 +606,65 @@ export default function App() {
       <main className="main-content">
 
       {view === 'dashboard' && <Dashboard sections={sections} canvas={canvas} onNavigate={(v) => setView(v as any)} onExtract={(url) => handleExtract(url, '', [])} extractLoading={loading} />}
+
+      {view === ('project-detail' as any) && (() => {
+        const project = projectList.find(p => p.id === activeProjectId)
+        if (!project) return <div className="project-detail-empty">プロジェクトが見つかりません</div>
+        const projectSections = (project.canvas_json || []).map((block: any) => {
+          const section = sections.find(s => s.id === block.sectionId)
+          return section ? { canvas: block, section } : null
+        }).filter(Boolean) as Array<{ canvas: any; section: any }>
+        return (
+          <div className="project-detail">
+            <div className="project-detail-header">
+              <div>
+                <h2 className="project-detail-title">{project.name}</h2>
+                <p className="project-detail-meta">
+                  {projectSections.length} パーツ · 作成日 {new Date(project.created_at).toLocaleDateString('ja-JP')}
+                </p>
+              </div>
+              <div className="project-detail-actions">
+                <button className="project-detail-btn edit" onClick={() => { handleSwitchProject(project.id) }}>
+                  編集する
+                </button>
+                <button className="project-detail-btn export" onClick={() => { handleSwitchProject(project.id); setTimeout(() => { setView('preview'); setTimeout(() => handleExportZip(), 300) }, 300) }}>
+                  ZIP出力
+                </button>
+                <button className="project-detail-btn delete" onClick={() => { handleDeleteProject(project.id); setView('dashboard' as any) }}>
+                  削除
+                </button>
+              </div>
+            </div>
+            {projectSections.length === 0 ? (
+              <div className="project-detail-empty-parts">
+                <p>このプロジェクトにはまだパーツがありません</p>
+                <button className="project-detail-btn edit" onClick={() => handleSwitchProject(project.id)}>パーツを追加する</button>
+              </div>
+            ) : (
+              <div className="project-detail-parts">
+                <h3>パーツ一覧</h3>
+                <div className="project-detail-grid">
+                  {projectSections.map((item, i) => (
+                    <div key={item.canvas.id || i} className="project-part-card">
+                      <div className="project-part-thumb">
+                        {item.section.thumbnailUrl ? (
+                          <img src={item.section.thumbnailUrl} alt={item.section.block_family} />
+                        ) : (
+                          <div className="project-part-placeholder">{i + 1}</div>
+                        )}
+                      </div>
+                      <div className="project-part-info">
+                        <span className="project-part-family">{item.section.block_family}</span>
+                        <span className="project-part-domain">{item.section.source_sites?.normalized_domain || ''}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
       {view === 'editor' && (
         <div className="editor-layout">
