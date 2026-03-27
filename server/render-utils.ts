@@ -475,6 +475,154 @@ export function stripVideoElements(html: string): string {
   return result
 }
 
+/**
+ * Extract CSS-relevant tokens (class names, IDs, tag names) from HTML.
+ * Used to filter CSS rules to only those relevant to a section.
+ */
+export function extractHtmlTokens(html: string): { classes: Set<string>, ids: Set<string>, tags: Set<string> } {
+  const classes = new Set<string>()
+  const ids = new Set<string>()
+  const tags = new Set<string>()
+
+  const classRe = /class(?:Name)?=["']([^"']+)["']/gi
+  let m: RegExpExecArray | null
+  while ((m = classRe.exec(html)) !== null) {
+    for (const token of m[1].split(/\s+/)) {
+      if (token) classes.add(token)
+    }
+  }
+
+  const idRe = /id=["']([^"']+)["']/gi
+  while ((m = idRe.exec(html)) !== null) {
+    if (m[1]) ids.add(m[1])
+  }
+
+  const tagRe = /<([a-z][a-z0-9]*)\b/gi
+  while ((m = tagRe.exec(html)) !== null) {
+    tags.add(m[1].toLowerCase())
+  }
+
+  return { classes, ids, tags }
+}
+
+/**
+ * Filter CSS to only include rules relevant to the given HTML tokens.
+ * Keeps @font-face, @keyframes, @import unconditionally.
+ * For regular rules, checks if any selector references a class, ID, or tag from the tokens.
+ * For nested @media/@supports, recursively filters and keeps if any inner rules match.
+ */
+export function filterCssForSection(css: string, tokens: { classes: Set<string>, ids: Set<string>, tags: Set<string> }): string {
+  let index = 0
+  let output = ''
+
+  while (index < css.length) {
+    if (css.startsWith('/*', index)) {
+      const end = skipComment(css, index)
+      output += css.slice(index, end)
+      index = end
+      continue
+    }
+
+    const char = css[index]
+
+    if (/\s/.test(char)) {
+      output += char
+      index += 1
+      continue
+    }
+
+    if (char === '@') {
+      const boundaryIndex = findTopLevelBoundary(css, index, ['{', ';'])
+      if (boundaryIndex === -1) {
+        output += css.slice(index)
+        break
+      }
+
+      if (css[boundaryIndex] === ';') {
+        output += css.slice(index, boundaryIndex + 1)
+        index = boundaryIndex + 1
+        continue
+      }
+
+      const header = css.slice(index, boundaryIndex).trim()
+      const atRuleName = getAtRuleName(header)
+      const closeIndex = findMatchingBrace(css, boundaryIndex)
+      if (closeIndex === -1) {
+        output += css.slice(index)
+        break
+      }
+
+      const body = css.slice(boundaryIndex + 1, closeIndex)
+
+      if (atRuleName === 'font-face' || isKeyframesRule(atRuleName)) {
+        output += css.slice(index, closeIndex + 1)
+      } else if (NESTED_AT_RULES.has(atRuleName)) {
+        const filteredBody = filterCssForSection(body, tokens)
+        if (filteredBody.trim()) {
+          output += `${header}{${filteredBody}}`
+        }
+      } else {
+        output += css.slice(index, closeIndex + 1)
+      }
+
+      index = closeIndex + 1
+      continue
+    }
+
+    const openIndex = findTopLevelBoundary(css, index, ['{'])
+    if (openIndex === -1) {
+      output += css.slice(index)
+      break
+    }
+
+    const closeIndex = findMatchingBrace(css, openIndex)
+    if (closeIndex === -1) {
+      output += css.slice(index)
+      break
+    }
+
+    const selectorText = css.slice(index, openIndex).trim()
+    const body = css.slice(openIndex + 1, closeIndex)
+
+    if (selectorMatchesTokens(selectorText, tokens)) {
+      output += `${selectorText}{${body}}`
+    }
+
+    index = closeIndex + 1
+  }
+
+  return output
+}
+
+function selectorMatchesTokens(selectorText: string, tokens: { classes: Set<string>, ids: Set<string>, tags: Set<string> }): boolean {
+  const selectors = splitTopLevelSelectors(selectorText)
+
+  for (const selector of selectors) {
+    const trimmed = selector.trim()
+    if (!trimmed) continue
+
+    if (trimmed === '*' || trimmed === ':root') return true
+
+    const classRe = /\.(-?[a-zA-Z_][\w-]*)/g
+    let m: RegExpExecArray | null
+    while ((m = classRe.exec(trimmed)) !== null) {
+      if (tokens.classes.has(m[1])) return true
+    }
+
+    const idRe = /#(-?[a-zA-Z_][\w-]*)/g
+    while ((m = idRe.exec(trimmed)) !== null) {
+      if (tokens.ids.has(m[1])) return true
+    }
+
+    const tagRe = /(?:^|[\s>+~])([a-zA-Z][a-zA-Z0-9]*)/g
+    while ((m = tagRe.exec(trimmed)) !== null) {
+      if (tokens.tags.has(m[1].toLowerCase())) return true
+    }
+  }
+
+  return false
+}
+
 function scopeCssVariables(css: string, scopeClass: string): string {
   // scopeClassからハッシュ部分を抽出（pc-sec-xxxx → xxxx の先頭8文字）
   const hash = scopeClass.replace('pc-sec-', '').slice(0, 8)

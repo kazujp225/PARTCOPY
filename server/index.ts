@@ -51,8 +51,11 @@ import {
   rewriteHtmlAssetUrls,
   scopeCss,
   scopeHtmlInlineVars,
-  stripVideoElements
+  stripVideoElements,
+  extractHtmlTokens,
+  filterCssForSection
 } from './render-utils.js'
+import { extractColorsFromCss, extractFontsFromCss, generateDesignTokensCss, generateBrandGuide } from './design-tokens.js'
 
 /**
  * Sanitize error messages before sending to clients.
@@ -377,7 +380,11 @@ async function prepareSectionRender(sectionId: string): Promise<PreparedSectionR
   const pageOrigin = getPageOrigin(record.page?.url)
   const scopeClass = createSectionScopeClass(sectionId)
   const cssBundle = await loadSectionCssBundle(record.page?.css_bundle_path)
-  const { scopedCss, fontFaceCss } = scopeCss(cssBundle, scopeClass)
+
+  // Filter CSS to only rules relevant to this section's HTML
+  const htmlTokens = extractHtmlTokens(html)
+  const filteredCss = filterCssForSection(cssBundle, htmlTokens)
+  const { scopedCss, fontFaceCss } = scopeCss(filteredCss, scopeClass)
 
   return {
     sectionId,
@@ -2222,7 +2229,14 @@ ${guideImages || ' * （画像なし）'}
 
     const viteConfig = `import { defineConfig } from 'vite'\nimport react from '@vitejs/plugin-react'\n\nexport default defineConfig({\n  plugins: [react()],\n})\n`
 
-    const indexCss = `${dedupeCssBlocks([PARTCOPY_BASE_CSS, ...globalFontFaceCss]).join('\n\n')}\n`
+    // Extract design tokens from all component CSS
+    const allComponentCss = components.map(c => c.cssFile || '').join('\n') + '\n' + globalFontFaceCss.join('\n')
+    const extractedColors = extractColorsFromCss(allComponentCss)
+    const extractedFonts = extractFontsFromCss(allComponentCss)
+    const designTokensCss = generateDesignTokensCss(extractedColors, extractedFonts)
+    const brandGuide = generateBrandGuide(extractedColors, extractedFonts)
+
+    const indexCss = `@import './design-tokens.css';\n\n${dedupeCssBlocks([PARTCOPY_BASE_CSS, ...globalFontFaceCss]).join('\n\n')}\n`
 
     // Generate setup.sh
     const setupSh = `#!/bin/bash
@@ -2476,6 +2490,8 @@ src/components/○○Section.tsx ファイルも削除してOKです。
 npm run build を実行して本番用ビルドを作成してください。
 \`\`\`
 
+${brandGuide}
+
 ---
 
 ## 注意事項（変更してはいけないもの）
@@ -2540,6 +2556,7 @@ npm run build を実行して本番用ビルドを作成してください。
     archive.append(appTsx, { name: 'src/App.tsx' })
     archive.append(indexTsx, { name: 'src/index.tsx' })
     archive.append(indexCss, { name: 'src/index.css' })
+    archive.append(designTokensCss, { name: 'src/design-tokens.css' })
 
     for (const comp of components) {
       archive.append(comp.tsx, { name: `src/components/${comp.name}.tsx` })
