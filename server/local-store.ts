@@ -1043,15 +1043,12 @@ export async function cleanupCrawlRunSections(crawlRunId: string): Promise<{ dup
         seen.set(key, s.id)
       }
     }
-    const duplicates = toRemove.size
-
     // 1b. Navigation/Header dedup: 同一サイトでnav/headerは最初の1つだけ残す
     const singletonFamilies = ['navigation', 'footer']
     for (const family of singletonFamilies) {
       const allOfFamily = [...existingSections, ...pageSections]
         .filter(s => s.block_family === family && !toRemove.has(s.id))
       if (allOfFamily.length > 1) {
-        // Keep the first (largest text), remove rest from pageSections
         const sorted = allOfFamily.sort((a, b) => (b.text_summary || '').length - (a.text_summary || '').length)
         for (let i = 1; i < sorted.length; i++) {
           if (pageIds.has(sorted[i].page_id)) {

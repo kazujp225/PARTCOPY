@@ -439,11 +439,15 @@ async function processOnePage(
     // ========== Phase 4: Classify + Store each section ==========
     let sectionCount = 0
 
+    // サブページではnavigation/footerはスキップ（ホームページで既に取得済み）
+    const skipFamiliesOnSubpage = new Set(['navigation', 'footer'])
+
     for (const section of sections) {
       await setCrawlRunStatus(job.id, { status_detail: `${pageLabel}: セクション ${section.index + 1}/${sections.length} 処理中` })
       logger.debug('Processing section', { jobId: job.id, pageLabel, sectionIndex: section.index, total: sections.length, tagName: section.tagName, height: Math.round(section.boundingBox.height) })
 
-      const rawForClassifier: RawSection = {
+      // Pre-classify to check if we should skip on subpages
+      const preClassifyRaw: RawSection = {
         tagName: section.tagName,
         outerHTML: section.outerHTML,
         textContent: section.textContent,
@@ -459,7 +463,14 @@ async function processOnePage(
         classNames: section.classTokens.join(' '),
         id: section.idTokens[0] || ''
       }
-      const classification = classifySection(rawForClassifier, section.index, sections.length)
+      const preClassification = classifySection(preClassifyRaw, section.index, sections.length)
+      if (pageType === 'subpage' && skipFamiliesOnSubpage.has(preClassification.type)) {
+        logger.debug('Skipping duplicate navigation/footer on subpage', { jobId: job.id, pageLabel, family: preClassification.type })
+        continue
+      }
+
+      const rawForClassifier: RawSection = preClassifyRaw
+      const classification = preClassification
       const canonical = canonicalizeSection(section, classification.type)
       const finalPageUrl = page.url()
 

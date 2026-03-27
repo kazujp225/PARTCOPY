@@ -11,7 +11,7 @@ import { Dashboard } from './components/Dashboard'
 import { FAMILY_COLORS, FAMILY_LABELS, FAMILY_ICONS } from './constants'
 import './styles.css'
 
-type View = 'dashboard' | 'editor' | 'preview' | 'library'
+type View = 'dashboard' | 'editor' | 'preview' | 'library' | 'project-detail'
 
 const CANVAS_STORAGE_KEY = 'partcopy:canvas'
 const CANVAS_STORAGE_VERSION = 1
@@ -498,7 +498,7 @@ export default function App() {
             <button
               key={p.id}
               className={`sidebar-saved-btn ${p.id === activeProjectId && view === 'project-detail' ? 'active' : ''}`}
-              onClick={() => { setActiveProjectId(p.id); setCanvas(p.canvas_json || []); setView('project-detail' as any) }}
+              onClick={() => { setActiveProjectId(p.id); setCanvas(p.canvas_json || []); setView('project-detail') }}
             >
               <span className="sidebar-saved-name">{p.name}</span>
               <span className="sidebar-saved-meta">{p.canvas_json?.length || 0}パーツ</span>
@@ -607,7 +607,7 @@ export default function App() {
 
       {view === 'dashboard' && <Dashboard sections={sections} canvas={canvas} onNavigate={(v) => setView(v as any)} onExtract={(url) => handleExtract(url, '', [])} extractLoading={loading} />}
 
-      {view === ('project-detail' as any) && (() => {
+      {view === 'project-detail' && (() => {
         const project = projectList.find(p => p.id === activeProjectId)
         if (!project) return <div className="project-detail-empty">プロジェクトが見つかりません</div>
         const projectSections = (project.canvas_json || []).map((block: any) => {
@@ -630,7 +630,7 @@ export default function App() {
                 <button className="project-detail-btn export" onClick={() => { handleSwitchProject(project.id); setTimeout(() => { setView('preview'); setTimeout(() => handleExportZip(), 300) }, 300) }}>
                   ZIP出力
                 </button>
-                <button className="project-detail-btn delete" onClick={() => { handleDeleteProject(project.id); setView('dashboard' as any) }}>
+                <button className="project-detail-btn delete" onClick={() => { handleDeleteProject(project.id); setView('dashboard') }}>
                   削除
                 </button>
               </div>
