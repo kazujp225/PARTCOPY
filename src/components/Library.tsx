@@ -266,7 +266,13 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
                 )}
               </div>
               <div className="library-card-body">
-                <h3 className="library-card-title">{section.source_sites?.normalized_domain || 'Unknown'}</h3>
+                <h3 className="library-card-title">
+                  {section.source_pages?.url ? (
+                    <a href={section.source_pages.url} target="_blank" rel="noopener noreferrer" className="library-card-link">{section.source_sites?.normalized_domain || 'Unknown'}</a>
+                  ) : (
+                    section.source_sites?.normalized_domain || 'Unknown'
+                  )}
+                </h3>
                 {section.text_summary && <p className="library-card-desc">{section.text_summary}</p>}
                 <div className="library-card-meta">
                   {section.source_sites?.genre && <span className="library-card-genre-tag">{section.source_sites.genre}</span>}

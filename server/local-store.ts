@@ -36,6 +36,7 @@ interface CrawlRunRow extends JsonObject {
   status_detail?: string | null
   page_count: number
   section_count: number
+  max_pages: number
   queued_at: string
   started_at?: string | null
   finished_at?: string | null
@@ -134,6 +135,13 @@ interface ProjectPageBlockRow extends JsonObject {
   created_at: string
 }
 
+interface ProjectRow extends JsonObject {
+  id: string
+  name: string
+  canvas_json: any[]
+  created_at: string
+}
+
 interface LocalDB {
   source_sites: SourceSiteRow[]
   crawl_runs: CrawlRunRow[]
@@ -148,6 +156,7 @@ interface LocalDB {
   section_patch_sets: SectionPatchSetRow[]
   section_patches: SectionPatchRow[]
   project_page_blocks: ProjectPageBlockRow[]
+  projects: ProjectRow[]
 }
 
 const FAMILY_SEEDS = [
@@ -231,7 +240,8 @@ function createDefaultDb(): LocalDB {
     section_nodes: [],
     section_patch_sets: [],
     section_patches: [],
-    project_page_blocks: []
+    project_page_blocks: [],
+    projects: []
   }
 }
 
@@ -434,7 +444,7 @@ export async function updateSourceSite(siteId: string, patch: Partial<SourceSite
   })
 }
 
-export async function createCrawlRun(input: { site_id: string; trigger_type?: string; status?: string }) {
+export async function createCrawlRun(input: { site_id: string; trigger_type?: string; status?: string; max_pages?: number }) {
   return withWriteLock(async db => {
     const job: CrawlRunRow = {
       id: randomUUID(),
@@ -443,6 +453,7 @@ export async function createCrawlRun(input: { site_id: string; trigger_type?: st
       status: input.status || 'queued',
       page_count: 0,
       section_count: 0,
+      max_pages: input.max_pages ?? 5,
       queued_at: now(),
       started_at: null,
       finished_at: null
@@ -548,6 +559,13 @@ export async function getPageByCrawlRun(crawlRunId: string) {
   const db = await readDb()
   const row = db.source_pages.find(page => page.crawl_run_id === crawlRunId)
   return row ? clone(row) : null
+}
+
+export async function getPagesByCrawlRun(crawlRunId: string) {
+  const db = await readDb()
+  return db.source_pages
+    .filter(page => page.crawl_run_id === crawlRunId)
+    .map(clone)
 }
 
 export async function getPageById(pageId: string) {
@@ -963,5 +981,116 @@ export async function createProjectPageBlock(record: JsonObject) {
     }
     db.project_page_blocks.push(row)
     return clone(row)
+  })
+}
+
+// ============================================================
+// Auto-cleanup: duplicates & garbage sections for a crawl run
+// ============================================================
+
+export async function cleanupCrawlRunSections(crawlRunId: string): Promise<{ duplicates: number; garbage: number; oversized: number }> {
+  return withWriteLock(async db => {
+    const page = db.source_pages.find(p => p.crawl_run_id === crawlRunId)
+    if (!page) return { duplicates: 0, garbage: 0, oversized: 0 }
+
+    const pageSections = db.source_sections.filter(s => s.page_id === page.id)
+    const toRemove = new Set<string>()
+
+    // 1. Duplicates: same block_family + similar text (first 50 chars)
+    const seen = new Map<string, string>() // key → first section id
+    for (const s of pageSections) {
+      const textKey = (s.text_summary || '').replace(/\s+/g, ' ').trim().slice(0, 50)
+      const key = `${s.block_family}::${textKey}`
+      if (seen.has(key)) {
+        toRemove.add(s.id)
+      } else {
+        seen.set(key, s.id)
+      }
+    }
+    const duplicates = toRemove.size
+
+    // 2. Garbage: empty or whitespace-only text_summary
+    for (const s of pageSections) {
+      if (toRemove.has(s.id)) continue
+      const text = (s.text_summary || '').replace(/\s+/g, '').trim()
+      if (text.length < 5) {
+        toRemove.add(s.id)
+      }
+    }
+    const garbage = toRemove.size - duplicates
+
+    // 3. Oversized page dumps
+    for (const s of pageSections) {
+      if (toRemove.has(s.id)) continue
+      const f = s.features_jsonb || {}
+      if ((f.cardCount || 0) > 50 || (f.linkCount || 0) > 100 || (f.headingCount || 0) > 30) {
+        toRemove.add(s.id)
+      }
+    }
+    const oversized = toRemove.size - duplicates - garbage
+
+    if (toRemove.size === 0) return { duplicates: 0, garbage: 0, oversized: 0 }
+
+    // Remove sections and cascade
+    const snapshotIds = new Set(
+      db.section_dom_snapshots.filter(snap => toRemove.has(snap.section_id)).map(snap => snap.id)
+    )
+    const patchSetIds = new Set(
+      db.section_patch_sets.filter(ps => toRemove.has(ps.section_id)).map(ps => ps.id)
+    )
+
+    db.source_sections = db.source_sections.filter(s => !toRemove.has(s.id))
+    db.section_dom_snapshots = db.section_dom_snapshots.filter(snap => !toRemove.has(snap.section_id))
+    db.section_nodes = db.section_nodes.filter(node => !snapshotIds.has(node.snapshot_id))
+    db.block_instances = db.block_instances.filter(bi => !toRemove.has(bi.source_section_id))
+    db.section_patch_sets = db.section_patch_sets.filter(ps => !toRemove.has(ps.section_id))
+    db.section_patches = db.section_patches.filter(p => !patchSetIds.has(p.patch_set_id))
+    db.project_page_blocks = db.project_page_blocks.filter(b => !toRemove.has(b.source_section_id))
+
+    return { duplicates, garbage, oversized }
+  })
+}
+
+// ============================================================
+// Projects CRUD
+// ============================================================
+
+export async function listProjects() {
+  const db = await readDb()
+  return clone(
+    [...(db.projects || [])].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  )
+}
+
+export async function createProject(name: string) {
+  return withWriteLock(async db => {
+    if (!db.projects) db.projects = []
+    const row: ProjectRow = {
+      id: randomUUID(),
+      name,
+      canvas_json: [],
+      created_at: now()
+    }
+    db.projects.push(row)
+    return clone(row)
+  })
+}
+
+export async function updateProject(projectId: string, patch: { name?: string; canvas_json?: any[] }) {
+  return withWriteLock(async db => {
+    if (!db.projects) db.projects = []
+    const project = db.projects.find(p => p.id === projectId)
+    if (!project) return null
+    if (patch.name !== undefined) project.name = patch.name
+    if (patch.canvas_json !== undefined) project.canvas_json = patch.canvas_json
+    return clone(project)
+  })
+}
+
+export async function deleteProject(projectId: string) {
+  return withWriteLock(async db => {
+    if (!db.projects) db.projects = []
+    db.projects = db.projects.filter(p => p.id !== projectId)
+    return true
   })
 }

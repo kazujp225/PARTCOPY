@@ -527,18 +527,26 @@ export default function App() {
               className={`sidebar-project-btn ${p.id === activeProjectId ? 'active' : ''}`}
               onClick={() => handleSwitchProject(p.id)}
             >
-              <span>{p.name}</span>
-              {p.id === activeProjectId && <span className="sidebar-site-count">編集中</span>}
+              <div className="sidebar-project-info">
+                <span className="sidebar-project-name">{p.name}</span>
+                <span className="sidebar-project-meta">
+                  {p.canvas_json?.length || 0} パーツ
+                  {p.id === activeProjectId && ' · 編集中'}
+                </span>
+              </div>
               {p.id !== activeProjectId && (
                 <span className="sidebar-project-delete" onClick={e => { e.stopPropagation(); handleDeleteProject(p.id) }}>×</span>
               )}
             </button>
           ))}
+          {projectList.length === 0 && !showNewProject && (
+            <p className="sidebar-project-empty">プロジェクトを作成して、パーツを組み合わせましょう</p>
+          )}
           {showNewProject ? (
             <div className="sidebar-project-input">
               <input
                 type="text"
-                placeholder="プロジェクト名"
+                placeholder="プロジェクト名（例: 自社LP）"
                 value={newProjectName}
                 onChange={e => setNewProjectName(e.target.value)}
                 onKeyDown={e => {

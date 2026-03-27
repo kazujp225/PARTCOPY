@@ -64,6 +64,16 @@ export function Dashboard({ sections, canvas, onNavigate, onExtract, extractLoad
     .sort((a, b) => b.latest.localeCompare(a.latest))
     .slice(0, 5)
 
+  // Build domain → page URL mapping from sections
+  const domainUrls = new Map<string, string>()
+  sections.forEach(s => {
+    const dom = s.source_sites?.normalized_domain
+    const url = s.source_pages?.url
+    if (dom && url && !domainUrls.has(dom)) {
+      domainUrls.set(dom, url)
+    }
+  })
+
   const crawlTotal = crawlQueue + crawlDone
   const crawlPercent = crawlTotal > 0 ? Math.round((crawlDone / crawlTotal) * 100) : 0
 
@@ -169,17 +179,24 @@ export function Dashboard({ sections, canvas, onNavigate, onExtract, extractLoad
         <p className="dash-empty">まだ取得履歴がありません</p>
       ) : (
         <div className="dash-recent-list">
-          {recentSites.map(site => (
-            <div key={site.domain} className="dash-recent-row">
-              <div className="dash-recent-info">
-                <span className="dash-recent-domain">{site.domain}</span>
-                <span className="dash-recent-time">
-                  {new Date(site.latest).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                </span>
+          {recentSites.map(site => {
+            const pageUrl = domainUrls.get(site.domain)
+            return (
+              <div key={site.domain} className="dash-recent-row">
+                <div className="dash-recent-info">
+                  {pageUrl ? (
+                    <a className="dash-recent-domain dash-link" href={pageUrl} target="_blank" rel="noopener noreferrer">{site.domain}</a>
+                  ) : (
+                    <span className="dash-recent-domain">{site.domain}</span>
+                  )}
+                  <span className="dash-recent-time">
+                    {new Date(site.latest).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+                <span className="dash-recent-count">{site.count} パーツ</span>
               </div>
-              <span className="dash-recent-count">{site.count} パーツ</span>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
@@ -191,12 +208,19 @@ export function Dashboard({ sections, canvas, onNavigate, onExtract, extractLoad
             <p>取得サイト一覧</p>
           </div>
           <div className="dash-site-grid">
-            {topSites.map(([domain, count]) => (
-              <div key={domain} className="dash-site-row">
-                <span className="dash-site-domain">{domain}</span>
-                <span className="dash-site-count">{count}</span>
-              </div>
-            ))}
+            {topSites.map(([domain, count]) => {
+              const pageUrl = domainUrls.get(domain)
+              return (
+                <div key={domain} className="dash-site-row">
+                  {pageUrl ? (
+                    <a className="dash-site-domain dash-link" href={pageUrl} target="_blank" rel="noopener noreferrer">{domain}</a>
+                  ) : (
+                    <span className="dash-site-domain">{domain}</span>
+                  )}
+                  <span className="dash-site-count">{count}</span>
+                </div>
+              )
+            })}
           </div>
         </>
       )}

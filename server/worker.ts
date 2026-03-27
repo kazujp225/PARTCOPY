@@ -1,14 +1,16 @@
 /**
- * Extract Worker v3 - Complete Site Download
+ * Extract Worker v3 - Complete Site Download + Multi-Page Crawling
  *
  * Pipeline:
  * 1. downloadSite: HTML/CSS/画像/フォントを全て直接ダウンロード → URL書き換え
  * 2. Section detection (Puppeteer page.evaluate)
  * 3. Classify + Canonicalize + Store each section (with rewritten URLs)
  * 4. DOM snapshot for editing
+ * 5. Collect same-domain links → crawl sub-pages (up to max_pages)
  */
 import {
   claimQueuedJob,
+  cleanupCrawlRunSections,
   cleanupOldData,
   createSectionDomSnapshot,
   createSourcePage,
@@ -27,7 +29,7 @@ import {
 // TSX変換はZIPエクスポート時にオンデマンド実行（server/index.ts）
 import { HAS_SUPABASE, supabaseAdmin } from './supabase.js'
 import { STORAGE_BUCKETS } from './storage-config.js'
-import { launchBrowser } from './capture-runner.js'
+import { launchBrowser, collectPageLinks } from './capture-runner.js'
 import { downloadSite } from './site-downloader.js'
 import { detectSections, screenshotSection } from './section-detector.js'
 import { extractStyleSummary, generateLayoutSignature } from './style-extractor.js'
@@ -41,6 +43,7 @@ const WORKER_ID = `worker-${process.pid}`
 const POLL_INTERVAL = 3000
 const MAX_RETRIES = 3
 const RETRY_BASE_DELAY_S = 5
+const DEFAULT_MAX_PAGES = 5
 const DATA_RETENTION_DAYS = Number(process.env.DATA_RETENTION_DAYS) || 30
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
 const SITE_TIMEOUT_MS = 180000 // 180s overall timeout for download + section detection
@@ -306,25 +309,37 @@ async function markSiteAnalyzed(siteId: string) {
   await supabaseAdmin.from('source_sites').update(patch).eq('id', siteId)
 }
 
-async function processJob(job: any) {
-  const site = job.source_sites
-  const url = site.homepage_url
-  logger.info('Job started', { jobId: job.id, siteId: site.id, url, workerId: WORKER_ID })
+/**
+ * 単一ページをダウンロード → セクション検出 → 分類 → 保存するパイプライン。
+ * processJob から呼び出される。
+ *
+ * @returns セクション数と、ページ上で検出された同一ドメインリンクのリスト
+ */
+interface PagePipelineResult {
+  sectionCount: number
+  collectedLinks: string[]
+  pageUrl: string
+}
 
-  await setCrawlRunStatus(job.id, { status: 'rendering' })
-
-  const browser = await launchBrowser()
+async function processOnePage(
+  browser: Awaited<ReturnType<typeof launchBrowser>>,
+  targetUrl: string,
+  job: any,
+  site: any,
+  pageType: string,
+  pageLabel: string
+): Promise<PagePipelineResult> {
+  const page = await browser.newPage()
 
   try {
-    const page = await browser.newPage()
-
     // ========== Phase 1: Complete Site Download ==========
-    logger.info('Phase 1: Downloading site', { jobId: job.id, url })
-    const dlResult = await withTimeout(downloadSite(page, url, site.id, job.id), DOWNLOAD_TIMEOUT_MS, 'downloadSite')
+    logger.info(`${pageLabel} Phase 1: Downloading`, { jobId: job.id, url: targetUrl })
+    await setCrawlRunStatus(job.id, { status: 'rendering', status_detail: `${pageLabel}: ダウンロード中` })
+
+    const dlResult = await withTimeout(downloadSite(page, targetUrl, site.id, job.id), DOWNLOAD_TIMEOUT_MS, 'downloadSite')
     let dl: Awaited<ReturnType<typeof downloadSite>>
     if (dlResult.timedOut) {
-      logger.warn('Phase 1 timeout: downloadSite exceeded 60s, attempting to use partial page content', { jobId: job.id, url })
-      // Try to get whatever HTML is on the page and build a minimal dl object
+      logger.warn(`${pageLabel} Phase 1 timeout: downloadSite exceeded timeout, using partial content`, { jobId: job.id, url: targetUrl })
       const partialHtml = await page.content().catch(() => '<html><body></body></html>')
       const pageTitle = await page.title().catch(() => '')
       dl = {
@@ -334,46 +349,50 @@ async function processJob(job: any) {
         imageFiles: [],
         fontFiles: [],
         allAssets: [],
-        pageOrigin: new URL(url).origin
+        pageOrigin: new URL(targetUrl).origin
       } as any
-      logger.warn('Using partial page content after download timeout', { jobId: job.id, htmlLength: partialHtml.length })
     } else {
       dl = dlResult.result
     }
-    logger.info('Download complete', { jobId: job.id, title: dl.title, cssCount: dl.cssFiles.length, imageCount: dl.imageFiles.length, fontCount: dl.fontFiles.length })
+    logger.info(`${pageLabel} Download complete`, { jobId: job.id, title: dl.title, cssCount: dl.cssFiles.length, imageCount: dl.imageFiles.length, fontCount: dl.fontFiles.length })
+
+    // 認証チェック: レスポンスがログインページにリダイレクトされた場合スキップ
+    const finalUrl = page.url()
+    const AUTH_REDIRECT_PATTERNS = /\/(login|signin|sign-in|auth|oauth|sso|wp-login)/i
+    if (AUTH_REDIRECT_PATTERNS.test(new URL(finalUrl).pathname) && !AUTH_REDIRECT_PATTERNS.test(new URL(targetUrl).pathname)) {
+      logger.info(`${pageLabel} Skipped: redirected to auth page`, { jobId: job.id, targetUrl, redirectedTo: finalUrl })
+      return { sectionCount: 0, collectedLinks: [], pageUrl: targetUrl }
+    }
 
     // ========== Phase 2: Store page-level data ==========
-    await setCrawlRunStatus(job.id, { status: 'parsed', status_detail: 'サイトダウンロード完了' })
+    await setCrawlRunStatus(job.id, { status: 'parsed', status_detail: `${pageLabel}: ダウンロード完了` })
 
-    // Upload rewritten HTML
-    const finalHtmlPath = `${site.id}/${job.id}/final.html`
+    // 一意のページ接尾辞（サブページ用にパスをハッシュ化）
+    const pageSlug = pageType === 'home' ? '' : `_${Buffer.from(new URL(targetUrl).pathname).toString('base64url').slice(0, 16)}`
+    const finalHtmlPath = `${site.id}/${job.id}/final${pageSlug}.html`
     await uploadBuffer(STORAGE_BUCKETS.RAW_HTML, finalHtmlPath, dl.finalHtml, 'text/html')
 
-    // Full page screenshot (QA)
     let pageScreenshotPath: string | undefined
     try {
       const fullScreenshot = await page.screenshot({ fullPage: true }) as Buffer
-      pageScreenshotPath = `${site.id}/${job.id}/fullpage.png`
+      pageScreenshotPath = `${site.id}/${job.id}/fullpage${pageSlug}.png`
       await uploadBuffer(STORAGE_BUCKETS.PAGE_SCREENSHOTS, pageScreenshotPath, fullScreenshot, 'image/png')
     } catch (ssErr: any) {
-      logger.warn('Page screenshot failed', { jobId: job.id, error: ssErr.message })
+      logger.warn(`${pageLabel} Page screenshot failed`, { jobId: job.id, error: ssErr.message })
     }
 
-    // CSS bundle path (already uploaded by downloadSite)
     const cssBundlePath = `${site.id}/${job.id}/bundle.css`
 
-    // Asset list
     const requestLog = JSON.stringify(dl.allAssets, null, 2)
-    const requestLogPath = `${site.id}/${job.id}/assets.json`
+    const requestLogPath = `${site.id}/${job.id}/assets${pageSlug}.json`
     await uploadBuffer(STORAGE_BUCKETS.RAW_HTML, requestLogPath, requestLog, 'application/json')
 
-    // Create source_page
     const sourcePage = await createPageRecord({
       crawl_run_id: job.id,
       site_id: site.id,
       url: page.url(),
       path: new URL(page.url()).pathname,
-      page_type: 'home',
+      page_type: pageType,
       title: dl.title,
       screenshot_storage_path: pageScreenshotPath,
       final_html_path: finalHtmlPath,
@@ -383,7 +402,6 @@ async function processJob(job: any) {
 
     if (!sourcePage) throw new Error('Failed to create source_page')
 
-    // Store page assets
     const assetRecords = dl.allAssets.slice(0, 200).map(a => ({
       page_id: sourcePage.id,
       asset_type: a.type,
@@ -396,19 +414,19 @@ async function processJob(job: any) {
     await storePageAssets(assetRecords)
 
     // ========== Phase 3: Section Detection ==========
-    await setCrawlRunStatus(job.id, { status: 'normalizing' })
+    await setCrawlRunStatus(job.id, { status: 'normalizing', status_detail: `${pageLabel}: セクション検出中` })
 
     const detectResult = await withTimeout(detectSections(page), DETECT_TIMEOUT_MS, 'detectSections')
     let sections: Awaited<ReturnType<typeof detectSections>>
     if (detectResult.timedOut) {
-      logger.warn('Phase 3 timeout: detectSections exceeded 30s, continuing with empty sections', { jobId: job.id })
+      logger.warn(`${pageLabel} Phase 3 timeout: detectSections exceeded timeout`, { jobId: job.id })
       sections = []
     } else {
       sections = detectResult.result
     }
-    logger.info('Sections detected', { jobId: job.id, sectionCount: sections.length })
+    logger.info(`${pageLabel} Sections detected`, { jobId: job.id, sectionCount: sections.length })
 
-    await setCrawlRunStatus(job.id, { status: 'normalizing', status_detail: `${sections.length}セクション検出` })
+    await setCrawlRunStatus(job.id, { status: 'normalizing', status_detail: `${pageLabel}: ${sections.length}セクション検出` })
 
     // Build URL rewrite map for section HTML
     const urlMap = new Map<string, string>()
@@ -419,13 +437,11 @@ async function processJob(job: any) {
 
     // ========== Phase 4: Classify + Store each section ==========
     let sectionCount = 0
-    // TSX変換はZIPエクスポート時にオンデマンドで実行
 
     for (const section of sections) {
-      await setCrawlRunStatus(job.id, { status_detail: `セクション ${section.index + 1}/${sections.length} 処理中` })
-      logger.debug('Processing section', { jobId: job.id, sectionIndex: section.index, total: sections.length, tagName: section.tagName, height: Math.round(section.boundingBox.height) })
+      await setCrawlRunStatus(job.id, { status_detail: `${pageLabel}: セクション ${section.index + 1}/${sections.length} 処理中` })
+      logger.debug('Processing section', { jobId: job.id, pageLabel, sectionIndex: section.index, total: sections.length, tagName: section.tagName, height: Math.round(section.boundingBox.height) })
 
-      // Classify
       const rawForClassifier: RawSection = {
         tagName: section.tagName,
         outerHTML: section.outerHTML,
@@ -446,33 +462,28 @@ async function processJob(job: any) {
       const canonical = canonicalizeSection(section, classification.type)
       const finalPageUrl = page.url()
 
-      // Rewrite URLs in section HTML
       const sectionHtml = rewriteStoredHtml(section.outerHTML, finalPageUrl, dl.pageOrigin, sortedEntries, urlMap)
-      // Upload rewritten section HTML
-      const rawPath = `${site.id}/${job.id}/raw_${section.index}.html`
+      const rawPath = `${site.id}/${job.id}/raw${pageSlug}_${section.index}.html`
       await uploadBuffer(STORAGE_BUCKETS.RAW_HTML, rawPath, sectionHtml, 'text/html')
 
       const previewHtml = rewriteStoredHtml(section.previewHTML, finalPageUrl, dl.pageOrigin, sortedEntries, urlMap)
-      const previewPath = `${site.id}/${job.id}/preview_${section.index}.html`
+      const previewPath = `${site.id}/${job.id}/preview${pageSlug}_${section.index}.html`
       await uploadBuffer(STORAGE_BUCKETS.SANITIZED_HTML, previewPath, previewHtml, 'text/html')
 
-      // QA screenshot - non-fatal
       let thumbnailPath: string | undefined
       try {
         const screenshotBuf = await screenshotSection(page, section.boundingBox)
         if (screenshotBuf) {
-          thumbnailPath = `${site.id}/${job.id}/section_${section.index}.png`
+          thumbnailPath = `${site.id}/${job.id}/section${pageSlug}_${section.index}.png`
           await uploadBuffer(STORAGE_BUCKETS.SECTION_THUMBNAILS, thumbnailPath, screenshotBuf, 'image/png')
         }
       } catch (thumbErr: any) {
-        logger.warn('Thumbnail failed', { jobId: job.id, sectionIndex: section.index, error: thumbErr.message })
+        logger.warn('Thumbnail failed', { jobId: job.id, pageLabel, sectionIndex: section.index, error: thumbErr.message })
       }
 
-      // Style summary + layout signature
       const styleSummary = extractStyleSummary(section)
       const layoutSig = generateLayoutSignature(section)
 
-      // Store source_section
       const sectionRow = await createSectionRecord({
         page_id: sourcePage.id,
         site_id: site.id,
@@ -502,8 +513,8 @@ async function processJob(job: any) {
         const snapshot = await parseSectionDOM(page, section, section.index)
         if (snapshot.resolvedHtml && snapshot.nodes.length > 0) {
           const resolvedHtml = rewriteStoredHtml(snapshot.resolvedHtml, finalPageUrl, dl.pageOrigin, sortedEntries, urlMap)
-          const resolvedPath = `${site.id}/${job.id}/resolved_${section.index}.html`
-          const domJsonPath = `${site.id}/${job.id}/dom_${section.index}.json`
+          const resolvedPath = `${site.id}/${job.id}/resolved${pageSlug}_${section.index}.html`
+          const domJsonPath = `${site.id}/${job.id}/dom${pageSlug}_${section.index}.json`
 
           await uploadBuffer(STORAGE_BUCKETS.SANITIZED_HTML, resolvedPath, resolvedHtml, 'text/html')
           await uploadBuffer(STORAGE_BUCKETS.SANITIZED_HTML, domJsonPath, JSON.stringify(snapshot.nodes), 'application/json')
@@ -534,10 +545,9 @@ async function processJob(job: any) {
           await storeSectionNodes(nodeRecords)
         }
       } catch (snapshotErr: any) {
-        logger.warn('DOM snapshot failed', { jobId: job.id, sectionIndex: section.index, error: snapshotErr.message })
+        logger.warn('DOM snapshot failed', { jobId: job.id, pageLabel, sectionIndex: section.index, error: snapshotErr.message })
       }
 
-      // Store canonical block_instance
       if (canonical) {
         const variantRow = await findVariantRecord(canonical.variant)
 
@@ -563,18 +573,185 @@ async function processJob(job: any) {
       sectionCount++
     }
 
-    // ========== Phase 5: Mark complete ==========
+    // Collect same-domain links before closing the page
+    let collectedLinks: string[] = []
+    try {
+      collectedLinks = await collectPageLinks(page, targetUrl)
+      logger.info(`${pageLabel} Collected links`, { jobId: job.id, linkCount: collectedLinks.length })
+    } catch (linkErr: any) {
+      logger.warn(`${pageLabel} Link collection failed`, { jobId: job.id, error: linkErr.message })
+    }
+
+    return { sectionCount, collectedLinks, pageUrl: page.url() }
+  } finally {
+    await page.close().catch(() => {})
+  }
+}
+
+/**
+ * サブページのURLにHTTPアクセスして、401/403 またはログインリダイレクトを検出する。
+ * Puppeteer を使わず fetch でチェックするため高速。
+ */
+async function isPageAccessible(targetUrl: string): Promise<boolean> {
+  try {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10000)
+
+    const response = await fetch(targetUrl, {
+      method: 'HEAD',
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+      }
+    })
+
+    clearTimeout(timeoutId)
+
+    // 401/403 はスキップ
+    if (response.status === 401 || response.status === 403) {
+      return false
+    }
+
+    // リダイレクト先が認証ページの場合スキップ
+    const AUTH_PATTERNS = /\/(login|signin|sign-in|auth|oauth|sso|wp-login)/i
+    const redirectedUrl = response.url
+    if (AUTH_PATTERNS.test(new URL(redirectedUrl).pathname) && !AUTH_PATTERNS.test(new URL(targetUrl).pathname)) {
+      return false
+    }
+
+    return response.ok || response.status === 304
+  } catch {
+    // ネットワークエラー等はスキップ
+    return false
+  }
+}
+
+async function processJob(job: any) {
+  const site = job.source_sites
+  const url = site.homepage_url
+  const maxPages = Number(job.max_pages) || DEFAULT_MAX_PAGES
+  logger.info('Job started', { jobId: job.id, siteId: site.id, url, maxPages, workerId: WORKER_ID })
+
+  await setCrawlRunStatus(job.id, { status: 'rendering' })
+
+  const browser = await launchBrowser()
+
+  try {
+    // ========== メインページ処理 ==========
+    const mainResult = await processOnePage(browser, url, job, site, 'home', 'ページ 1/1')
+
+    let totalSectionCount = mainResult.sectionCount
+    let totalPageCount = 1
+    const crawledUrls = new Set<string>()
+    crawledUrls.add(url)
+    // finalUrl（リダイレクト後）も記録
+    crawledUrls.add(mainResult.pageUrl)
+
+    // ========== サブページクロール ==========
+    if (maxPages > 1 && mainResult.collectedLinks.length > 0) {
+      // 最大 maxPages - 1 ページ（メインページ分を引く）
+      const subPageLimit = maxPages - 1
+      const candidateLinks = mainResult.collectedLinks.filter(link => !crawledUrls.has(link))
+
+      logger.info('Starting sub-page crawl', {
+        jobId: job.id,
+        candidates: candidateLinks.length,
+        limit: subPageLimit
+      })
+
+      let subPagesCrawled = 0
+
+      for (const subUrl of candidateLinks) {
+        if (subPagesCrawled >= subPageLimit) break
+        if (shuttingDown) break
+
+        // 既にクロール済みのURLはスキップ
+        if (crawledUrls.has(subUrl)) continue
+        crawledUrls.add(subUrl)
+
+        const subPageLabel = `ページ ${totalPageCount + 1}/${maxPages}`
+
+        // アクセシビリティ事前チェック（HEAD リクエスト）
+        const accessible = await isPageAccessible(subUrl)
+        if (!accessible) {
+          logger.info(`${subPageLabel} Skipped: not accessible`, { jobId: job.id, url: subUrl })
+          continue
+        }
+
+        try {
+          await setCrawlRunStatus(job.id, {
+            status: 'rendering',
+            status_detail: `${subPageLabel}: ${new URL(subUrl).pathname} クロール中`
+          })
+
+          const subResult = await processOnePage(browser, subUrl, job, site, 'subpage', subPageLabel)
+
+          // リダイレクト先も記録
+          crawledUrls.add(subResult.pageUrl)
+
+          totalSectionCount += subResult.sectionCount
+          totalPageCount++
+          subPagesCrawled++
+
+          // サブページから得たリンクも候補に追加（既存候補の後ろに）
+          for (const newLink of subResult.collectedLinks) {
+            if (!crawledUrls.has(newLink) && !candidateLinks.includes(newLink)) {
+              candidateLinks.push(newLink)
+            }
+          }
+
+          logger.info(`${subPageLabel} completed`, {
+            jobId: job.id,
+            url: subUrl,
+            sections: subResult.sectionCount,
+            newLinks: subResult.collectedLinks.length
+          })
+
+          // ページ間に短い遅延（サーバー負荷軽減）
+          await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000))
+
+        } catch (subErr: any) {
+          logger.warn(`${subPageLabel} failed, continuing`, {
+            jobId: job.id,
+            url: subUrl,
+            error: subErr.message
+          })
+          // サブページの失敗はジョブ全体を失敗させない
+          continue
+        }
+      }
+    }
+
+    // ========== Auto-cleanup duplicates & garbage ==========
+    const cleanup = await cleanupCrawlRunSections(job.id)
+    if (cleanup.duplicates + cleanup.garbage + cleanup.oversized > 0) {
+      totalSectionCount -= (cleanup.duplicates + cleanup.garbage + cleanup.oversized)
+      logger.info('Auto-cleanup completed', {
+        jobId: job.id,
+        duplicates: cleanup.duplicates,
+        garbage: cleanup.garbage,
+        oversized: cleanup.oversized
+      })
+    }
+
+    // ========== Mark complete ==========
     await setCrawlRunStatus(job.id, {
       status: 'done',
-      page_count: 1,
-      section_count: sectionCount,
+      page_count: totalPageCount,
+      section_count: Math.max(0, totalSectionCount),
       finished_at: new Date().toISOString()
     })
 
     await markSiteAnalyzed(site.id)
 
-    logger.info('Job completed', { jobId: job.id, siteId: site.id, url, sectionCount, assetCount: dl.allAssets.length })
-    // TSX変換はZIPエクスポート時にオンデマンドで実行
+    logger.info('Job completed', {
+      jobId: job.id,
+      siteId: site.id,
+      url,
+      pageCount: totalPageCount,
+      sectionCount: totalSectionCount
+    })
 
   } catch (err: any) {
     const retryCount = Number(job.retry_count) || 0

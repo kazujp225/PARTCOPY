@@ -4,15 +4,17 @@
  */
 import React, { useRef, useEffect, useState } from 'react'
 
-const DESKTOP_WIDTH = 1440
+const DEFAULT_RENDER_WIDTH = 1440
 
 interface Props {
   htmlUrl?: string | null
   maxHeight?: number
   scale?: number
+  renderWidth?: number
 }
 
-export function SourcePreviewFrame({ htmlUrl, maxHeight, scale }: Props) {
+export function SourcePreviewFrame({ htmlUrl, maxHeight, scale, renderWidth }: Props) {
+  const RENDER_WIDTH = renderWidth || DEFAULT_RENDER_WIDTH
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [height, setHeight] = useState(300)
@@ -53,7 +55,7 @@ export function SourcePreviewFrame({ htmlUrl, maxHeight, scale }: Props) {
     return null
   }
 
-  const computedScale = scale || (containerWidth > 0 ? containerWidth / DESKTOP_WIDTH : 0.5)
+  const computedScale = scale || (containerWidth > 0 ? containerWidth / RENDER_WIDTH : 0.5)
   const displayHeight = height * computedScale
 
   return (
@@ -63,7 +65,7 @@ export function SourcePreviewFrame({ htmlUrl, maxHeight, scale }: Props) {
         src={htmlUrl}
         style={{
           border: 'none',
-          width: DESKTOP_WIDTH,
+          width: RENDER_WIDTH,
           height,
           transform: `scale(${computedScale})`,
           transformOrigin: 'top left',

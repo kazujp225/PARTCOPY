@@ -20,6 +20,7 @@ import {
   getJob,
   getLatestResolvedSnapshot,
   getPageByCrawlRun,
+  getPagesByCrawlRun,
   getPageById,
   getPatchSet,
   getPatches,
@@ -30,7 +31,11 @@ import {
   listBlockVariants,
   listLibrarySections,
   readStoredText,
-  upsertSourceSite
+  upsertSourceSite,
+  listProjects,
+  createProject as createLocalProject,
+  updateProject as updateLocalProject,
+  deleteProject as deleteLocalProject
 } from './local-store.js'
 import { HAS_SUPABASE, supabaseAdmin } from './supabase.js'
 import { STORAGE_BUCKETS } from './storage-config.js'
@@ -485,7 +490,7 @@ async function readBucketText(bucket: string, storagePath?: string | null) {
   return file.text()
 }
 
-async function createExtractJobRecord(url: string, genre: string, tags: string[]) {
+async function createExtractJobRecord(url: string, genre: string, tags: string[], maxPages: number = 5) {
   const parsedUrl = new URL(url)
   const domain = parsedUrl.hostname.replace(/^www\./, '')
 
@@ -500,7 +505,8 @@ async function createExtractJobRecord(url: string, genre: string, tags: string[]
     const job = await createCrawlRun({
       site_id: site.id,
       trigger_type: 'manual',
-      status: 'queued'
+      status: 'queued',
+      max_pages: maxPages
     })
     return { site, job }
   }
@@ -526,7 +532,8 @@ async function createExtractJobRecord(url: string, genre: string, tags: string[]
     .insert({
       site_id: site.id,
       trigger_type: 'manual',
-      status: 'queued'
+      status: 'queued',
+      max_pages: maxPages
     })
     .select()
     .single()
@@ -554,29 +561,37 @@ async function getJobRecord(jobId: string) {
 
 async function getJobSectionsRecord(jobId: string) {
   if (!HAS_SUPABASE) {
-    const page = await getPageByCrawlRun(jobId)
-    if (!page) return null
-    const sections = await getSectionsByPage(page.id)
-    return { page, sections }
+    const pages = await getPagesByCrawlRun(jobId)
+    if (!pages.length) return null
+    // 全ページのセクションを結合（ページ順 → セクション順）
+    const allSections: any[] = []
+    for (const pg of pages) {
+      const pageSections = await getSectionsByPage(pg.id)
+      allSections.push(...pageSections)
+    }
+    // 最初のページをプライマリページとして返す（後方互換性）
+    return { page: pages[0], sections: allSections }
   }
 
-  const { data: page, error: pageError } = await supabaseAdmin
+  const { data: pages, error: pageError } = await supabaseAdmin
     .from('source_pages')
     .select('id, css_bundle_path, url')
     .eq('crawl_run_id', jobId)
-    .maybeSingle()
+    .order('created_at')
 
   if (pageError) throw new Error(pageError.message)
-  if (!page) return null
+  if (!pages || pages.length === 0) return null
 
+  // 全ページからセクションを取得
+  const pageIds = pages.map((p: any) => p.id)
   const { data: sections, error } = await supabaseAdmin
     .from('source_sections')
     .select('*, source_pages(url, title)')
-    .eq('page_id', page.id)
+    .in('page_id', pageIds)
     .order('order_index')
 
   if (error) throw new Error(error.message)
-  return { page, sections: sections || [] }
+  return { page: pages[0], sections: sections || [] }
 }
 
 async function getRenderContext(sectionId: string) {
@@ -987,23 +1002,25 @@ app.get('/assets/:siteId/:jobId/*', async (req, res) => {
     return
   }
 
-  // Local mode - serve from local storage
-  try {
-    const { buffer, contentType: localContentType } = await getStoredFileResponse(STORAGE_BUCKETS.RAW_HTML, storagePath)
-    res.setHeader('Content-Type', localContentType)
-    res.setHeader('Cache-Control', 'public, max-age=86400')
-    res.send(buffer)
-  } catch {
-    // Fallback: try sanitized-html bucket
+  // Local mode - try all relevant buckets
+  const localBuckets = [
+    STORAGE_BUCKETS.RAW_HTML,
+    STORAGE_BUCKETS.SANITIZED_HTML,
+    STORAGE_BUCKETS.SECTION_THUMBNAILS,
+    STORAGE_BUCKETS.PAGE_SCREENSHOTS
+  ]
+  for (const bucket of localBuckets) {
     try {
-      const { buffer, contentType: localContentType } = await getStoredFileResponse(STORAGE_BUCKETS.SANITIZED_HTML, storagePath)
+      const { buffer, contentType: localContentType } = await getStoredFileResponse(bucket, storagePath)
       res.setHeader('Content-Type', localContentType)
       res.setHeader('Cache-Control', 'public, max-age=86400')
       res.send(buffer)
+      return
     } catch {
-      res.status(404).send('File not found')
+      // try next bucket
     }
   }
+  res.status(404).send('File not found')
 })
 
 // Legacy: /api/storage/:bucket (backward compat for old data)
@@ -1040,7 +1057,7 @@ app.post('/api/extract', async (req, res) => {
     return
   }
 
-  const { url, genre, tags } = req.body
+  const { url, genre, tags, max_pages } = req.body
   if (!url || typeof url !== 'string' || !/^https?:\/\/.+/.test(url)) {
     res.status(400).json({ error: 'Valid URL (http/https) is required' })
     return
@@ -1058,6 +1075,14 @@ app.post('/api/extract', async (req, res) => {
     }
   }
 
+  if (max_pages !== undefined) {
+    const parsed = Number(max_pages)
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 50) {
+      res.status(400).json({ error: 'max_pages must be an integer between 1 and 50' })
+      return
+    }
+  }
+
   let parsedUrl: URL
   try {
     parsedUrl = new URL(url)
@@ -1067,9 +1092,10 @@ app.post('/api/extract', async (req, res) => {
   }
 
   try {
-    const { site, job } = await createExtractJobRecord(url, genre || '', Array.isArray(tags) ? tags : [])
+    const maxPagesNum = max_pages ? Number(max_pages) : 5
+    const { site, job } = await createExtractJobRecord(url, genre || '', Array.isArray(tags) ? tags : [], maxPagesNum)
 
-    res.json({ jobId: job.id, siteId: site.id, status: 'queued' })
+    res.json({ jobId: job.id, siteId: site.id, status: 'queued', maxPages: maxPagesNum })
   } catch (err: any) {
     logger.error('Extract job creation failed', { url, error: err.message })
     res.status(500).json({ error: safeErrorMessage(err) })
@@ -1901,35 +1927,133 @@ app.post('/api/export/zip', async (req, res) => {
       return exportPath
     }
 
-    const components: { name: string; tsx: string }[] = []
+    const components: { name: string; tsx: string; blockFamily: string }[] = []
+
+    // Regex to collect absolute URLs from TSX string literals (both single and double quoted)
+    const TSX_URL_RE = /(?:['"])(https?:\/\/[^'"\s]+)(?:['"])/g
+
+    function collectTsxAssetUrls(tsxCode: string) {
+      const urls: string[] = []
+      let m: RegExpExecArray | null
+      const re = new RegExp(TSX_URL_RE.source, TSX_URL_RE.flags)
+      while ((m = re.exec(tsxCode)) !== null) {
+        const url = m[1]
+        // Only collect URLs that look like assets (images, fonts, media)
+        if (/\.(png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm)(\?[^'"]*)?$/i.test(url)) {
+          urls.push(url)
+        }
+      }
+      return dedupeStrings(urls)
+    }
+
+    function rewriteTsxAssetUrls(tsxCode: string, replacer: (url: string) => string | undefined) {
+      return tsxCode.replace(
+        /(['"])(https?:\/\/[^'"\s]+)\1/g,
+        (match, quote, url) => {
+          const rewritten = replacer(url)
+          if (!rewritten) return match
+          return `${quote}${rewritten}${quote}`
+        }
+      )
+    }
+
+    function renameTsxDefaultExport(tsxCode: string, newName: string) {
+      // Handle: export default function Xxx(...)
+      let result = tsxCode.replace(
+        /export\s+default\s+function\s+\w+/,
+        `export default function ${newName}`
+      )
+      // Handle: const Xxx: React.FC = ... then export default Xxx
+      // Replace the const declaration name and the export default reference
+      const constMatch = result.match(/const\s+(\w+)\s*:\s*React\.FC/)
+      if (constMatch) {
+        const oldName = constMatch[1]
+        result = result.replace(
+          new RegExp(`const\\s+${oldName}\\s*:`),
+          `const ${newName}:`
+        )
+        result = result.replace(
+          new RegExp(`export\\s+default\\s+${oldName}\\s*;?\\s*$`, 'm'),
+          `export default ${newName};`
+        )
+      }
+      return result
+    }
 
     for (const prepared of preparedSections) {
-      const sectionAssetUrls = dedupeStrings([
-        ...collectHtmlAssetUrls(prepared.html),
-        ...collectCssAssetUrls(prepared.css),
-        ...prepared.fontFaceCss.flatMap((block) => collectCssAssetUrls(block))
-      ])
-
-      for (const sourceUrl of sectionAssetUrls) {
-        await ensureExportAsset(sourceUrl)
-      }
-
-      const html = rewriteHtmlAssetUrls(prepared.html, (url) => exportAssetPathBySource.get(url))
-      const css = rewriteCssUrls(prepared.css, (url) => exportAssetPathBySource.get(url))
-      const fontFaceCss = prepared.fontFaceCss.map((block) => rewriteCssUrls(block, (url) => exportAssetPathBySource.get(url)))
-      globalFontFaceCss.push(...fontFaceCss)
-
+      // Determine component name
       const componentBaseName = `${toPascalCase(prepared.blockFamily)}Section`
       const duplicateIndex = componentCounts.get(componentBaseName) || 0
       componentCounts.set(componentBaseName, duplicateIndex + 1)
       const componentName = duplicateIndex === 0 ? componentBaseName : `${componentBaseName}${duplicateIndex}`
 
-      const escapedHtml = escapeTemplateLiteral(html)
-      const escapedCss = escapeTemplateLiteral(css)
+      // Check if this section has Claude-converted TSX available
+      let tsxStoragePath: string | undefined
+      if (HAS_SUPABASE) {
+        const { data } = await supabaseAdmin
+          .from('source_sections')
+          .select('tsx_code_storage_path')
+          .eq('id', prepared.sectionId)
+          .single()
+        tsxStoragePath = data?.tsx_code_storage_path ?? undefined
+      } else {
+        const section = await getSection(prepared.sectionId)
+        tsxStoragePath = section?.tsx_code_storage_path ?? undefined
+      }
 
-      const tsx = `export default function ${componentName}() {\n  return (\n    <>\n${escapedCss ? `      <style dangerouslySetInnerHTML={{ __html: \`${escapedCss}\` }} />\n` : ''}      <section className="${prepared.scopeClass}" data-partcopy-section="${prepared.sectionId}" dangerouslySetInnerHTML={{ __html: \`${escapedHtml}\` }} />\n    </>\n  )\n}\n`
+      let storedTsx = ''
+      if (tsxStoragePath) {
+        storedTsx = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, tsxStoragePath)
+      }
 
-      components.push({ name: componentName, tsx })
+      if (storedTsx) {
+        // --- TSX path: use Claude-converted component ---
+
+        // Collect asset URLs from the TSX code and from font-face CSS
+        const tsxAssetUrls = collectTsxAssetUrls(storedTsx)
+        const fontAssetUrls = prepared.fontFaceCss.flatMap((block) => collectCssAssetUrls(block))
+        const allAssetUrls = dedupeStrings([...tsxAssetUrls, ...fontAssetUrls])
+
+        for (const sourceUrl of allAssetUrls) {
+          await ensureExportAsset(sourceUrl)
+        }
+
+        // Rewrite absolute URLs in TSX to /assets/ relative paths
+        let tsx = rewriteTsxAssetUrls(storedTsx, (url) => exportAssetPathBySource.get(url))
+
+        // Rename the default export to match our component naming
+        tsx = renameTsxDefaultExport(tsx, componentName)
+
+        // Still collect font-face CSS for index.css
+        const fontFaceCss = prepared.fontFaceCss.map((block) => rewriteCssUrls(block, (url) => exportAssetPathBySource.get(url)))
+        globalFontFaceCss.push(...fontFaceCss)
+
+        components.push({ name: componentName, tsx, blockFamily: prepared.blockFamily })
+      } else {
+        // --- Fallback: dangerouslySetInnerHTML with raw HTML ---
+
+        const sectionAssetUrls = dedupeStrings([
+          ...collectHtmlAssetUrls(prepared.html),
+          ...collectCssAssetUrls(prepared.css),
+          ...prepared.fontFaceCss.flatMap((block) => collectCssAssetUrls(block))
+        ])
+
+        for (const sourceUrl of sectionAssetUrls) {
+          await ensureExportAsset(sourceUrl)
+        }
+
+        const html = rewriteHtmlAssetUrls(prepared.html, (url) => exportAssetPathBySource.get(url))
+        const css = rewriteCssUrls(prepared.css, (url) => exportAssetPathBySource.get(url))
+        const fontFaceCss = prepared.fontFaceCss.map((block) => rewriteCssUrls(block, (url) => exportAssetPathBySource.get(url)))
+        globalFontFaceCss.push(...fontFaceCss)
+
+        const escapedHtml = escapeTemplateLiteral(html)
+        const escapedCss = escapeTemplateLiteral(css)
+
+        const tsx = `export default function ${componentName}() {\n  return (\n    <>\n${escapedCss ? `      <style dangerouslySetInnerHTML={{ __html: \`${escapedCss}\` }} />\n` : ''}      <section className="${prepared.scopeClass}" data-partcopy-section="${prepared.sectionId}" dangerouslySetInnerHTML={{ __html: \`${escapedHtml}\` }} />\n    </>\n  )\n}\n`
+
+        components.push({ name: componentName, tsx, blockFamily: prepared.blockFamily })
+      }
     }
 
     const imports = components.map((component) => `import ${component.name} from './components/${component.name}'`).join('\n')
@@ -2059,40 +2183,232 @@ npm run build
 `
 
     // Generate CLAUDE.md (Claude Code用の指示書)
-    const claudeMd = `# CLAUDE.md
+    const blockFamilyJa: Record<string, string> = {
+      navigation: 'ナビゲーション',
+      hero: 'ヒーロー',
+      feature: '特徴・サービス',
+      social_proof: '導入実績・信頼',
+      stats: '数字・実績',
+      pricing: '料金プラン',
+      faq: 'よくある質問',
+      content: 'コンテンツ',
+      cta: 'CTA（行動喚起）',
+      contact: 'お問い合わせ',
+      recruit: '採用',
+      footer: 'フッター',
+      news_list: 'お知らせ',
+      timeline: '沿革・タイムライン',
+      company_profile: '会社概要',
+      gallery: 'ギャラリー',
+      logo_cloud: 'ロゴ一覧',
+      section: 'セクション',
+      CUSTOM: 'カスタム'
+    }
+    const componentList = components
+      .map((c, i) => `| ${i + 1} | \`src/components/${c.name}.tsx\` | ${blockFamilyJa[c.blockFamily] || c.blockFamily} |`)
+      .join('\n')
 
-このプロジェクトはPARTCOPYで生成されたReact + TypeScript + ViteのWebサイトです。
+    const claudeMd = `# CLAUDE.md — このプロジェクトの取扱説明書
 
-## 起動方法
+> このファイルは Claude Code（AI）向けのガイドです。プロジェクトの構造と編集のコツがまとまっています。
+
+---
+
+## このプロジェクトについて
+
+このサイトは **PARTCOPY** というツールで作られました。
+プロの実在サイトから「ヒーロー」「料金プラン」「FAQ」「フッター」など、
+デザインパーツを1つずつ選んで組み合わせた **React + TypeScript + Vite** のプロジェクトです。
+
+デザインはすでに完成しています。あなたの仕事は **中身（テキスト・画像・色など）を差し替えること** です。
+レイアウトや構造はできるだけそのまま活かしてください。
+
+---
+
+## クイックスタート
+
 \`\`\`bash
+# 1. 依存パッケージをインストール
 npm install
+
+# 2. 開発サーバーを起動
 npm run dev
 \`\`\`
-http://localhost:5173 でブラウザ確認できます。
+
+ブラウザで **http://localhost:5173** を開くとサイトが表示されます。
+ファイルを保存するたびに自動でブラウザに反映されます（ホットリロード）。
+
+本番用にビルドしたいときは：
+\`\`\`bash
+npm run build
+\`\`\`
+\`dist/\` フォルダに出力されます。Vercel・Netlify 等にそのままデプロイできます。
+
+---
 
 ## 技術スタック
-- React 18 + TypeScript
-- Vite 6
-- アセットは \`public/assets/\` にローカル同梱
+
+| 項目 | 内容 |
+|------|------|
+| フレームワーク | React 18 + TypeScript |
+| ビルドツール | Vite 6 |
+| アセット | \`public/assets/\` にローカル同梱済み |
+| CSS | 各コンポーネント内にスコープ付きCSS（\`.pc-sec-*\`） |
+
+---
 
 ## プロジェクト構造
-- \`src/App.tsx\` — メインコンポーネント。全セクションをここでimportして縦に並べている
-- \`src/components/\` — 各セクションのTSXコンポーネント
-- \`src/index.css\` — ベースCSS + 重複排除済みフォント定義
-- \`public/assets/\` — 画像・フォント・背景画像
-- \`vite.config.ts\` — Vite + React 設定
 
-## よくある作業
-- 「テキストを変えて」→ 各コンポーネント内の日本語テキストを編集
-- 「画像を差し替えて」→ \`public/assets/\` 内の該当ファイルを差し替える
-- 「セクションを並び替えて」→ src/App.tsx のコンポーネント順序を変更
-- 「セクションを削除して」→ src/App.tsx からimportとJSXを削除
-- 「ビルドして」→ npm run build → dist/ に出力
-- 「デプロイして」→ dist/ をVercel/Netlify等にアップロード
+\`\`\`
+├── src/
+│   ├── App.tsx              ← メイン：全セクションを縦に並べている
+│   ├── index.tsx            ← エントリーポイント
+│   ├── index.css            ← ベースCSS + フォント定義
+│   └── components/          ← 各セクションのコンポーネント
+│       └── (下の一覧を参照)
+├── public/
+│   └── assets/              ← 画像・フォント・背景画像
+├── index.html
+├── package.json
+├── tsconfig.json
+└── vite.config.ts
+\`\`\`
 
-## 注意
-- セクションCSSは \`.pc-sec-*\` でスコープされています
-- 画像URLはローカルファイルに変換済みです
+---
+
+## コンポーネント一覧（このサイトのセクション）
+
+このサイトは以下のセクションで構成されています。上から順にページに表示されます。
+
+| 順番 | ファイル | セクションの種類 |
+|------|----------|------------------|
+${componentList}
+
+各コンポーネントは \`src/App.tsx\` で import されて順番に並んでいます。
+
+---
+
+## よくある編集作業
+
+以下は Claude Code でそのまま使えるコマンド例です。コピーしてお使いください。
+
+### テキストの差し替え
+
+自社の情報に書き換えたいときに使います。
+
+\`\`\`
+src/components/ 内の全コンポーネントで、ダミーテキストを以下の自社情報に差し替えてください：
+- 会社名: ○○株式会社
+- サービス名: ○○
+- キャッチコピー: ○○
+- 電話番号: 03-XXXX-XXXX
+- メール: info@example.com
+- 住所: 東京都○○区○○
+デザインやレイアウトは一切変更しないでください。
+\`\`\`
+
+### 画像の差し替え
+
+\`\`\`
+public/assets/ 内の画像ファイル一覧を見せてください。
+その後、指定するファイルを新しい画像に差し替えます。
+\`\`\`
+
+画像を差し替えるときは、同じファイル名で \`public/assets/\` に配置すればOKです。
+サイズやアスペクト比はできるだけ元の画像に合わせると、レイアウトが崩れません。
+
+### カラー（ブランドカラー）の変更
+
+\`\`\`
+サイト全体のメインカラーを #FF6B35 に統一してください。
+各コンポーネントのCSS内で使われている主要な色（ボタン、見出し、アクセントなど）を
+このカラーに変更してください。背景色や文字色のコントラストが十分か確認してください。
+\`\`\`
+
+### フォントの変更
+
+\`\`\`
+サイト全体のフォントを Noto Sans JP に変更してください。
+src/index.css の @font-face や font-family を修正し、
+各コンポーネント内の font-family も合わせて統一してください。
+\`\`\`
+
+### セクションの順序変更
+
+\`\`\`
+src/App.tsx でセクションの並び順を変更してください。
+HeroSection を一番上、FooterSection を一番下にして、
+間のセクション順を以下の通りにしてください：
+1. Hero
+2. Feature
+3. Pricing
+4. FAQ
+5. Contact
+6. Footer
+\`\`\`
+
+### セクションの削除
+
+\`\`\`
+○○Section を削除してください。
+src/App.tsx から import と JSX の両方を削除してください。
+src/components/○○Section.tsx ファイルも削除してOKです。
+\`\`\`
+
+### レスポンシブ対応
+
+\`\`\`
+このサイトをスマートフォンでも見やすくしてください。
+各コンポーネントのCSSにメディアクエリ (@media) を追加して、
+768px以下の画面幅で以下を対応してください：
+- 横並びレイアウトを縦並びに
+- フォントサイズの調整
+- パディング・マージンの縮小
+- 画像サイズの調整
+既存のデザインはデスクトップ版としてそのまま残してください。
+\`\`\`
+
+### ビルド・デプロイ
+
+\`\`\`
+npm run build を実行して本番用ビルドを作成してください。
+\`\`\`
+
+---
+
+## 注意事項（変更してはいけないもの）
+
+編集するときに以下の点に注意してください。これらを変更するとデザインが壊れます。
+
+1. **CSSクラス名 \`.pc-sec-*\` を変更しない**
+   各セクションのCSSは \`.pc-sec-*\` というクラスでスコープされています。
+   このクラス名を変更すると、スタイルが全く効かなくなります。
+
+2. **コンポーネントの描画方式について**
+   一部のコンポーネントはネイティブTSX（JSX要素で直接記述）、残りは \`dangerouslySetInnerHTML\` でHTMLを描画しています。
+   TSXコンポーネントはそのままReactの作法で編集できます。\`dangerouslySetInnerHTML\` のコンポーネントは中のHTMLテキストだけを編集してください。
+
+3. **コンポーネントの基本構造を保つ**
+   \`export default function ○○Section()\` の形を維持してください。
+   名前を変更する場合は \`src/App.tsx\` の import も忘れず合わせてください。
+
+4. **\`public/assets/\` のパス構造を保つ**
+   画像URLはすべてローカルファイルに変換済みです。
+   ファイル名やフォルダ構造を変更する場合は、コンポーネント内のパスも合わせて更新してください。
+
+5. **\`src/index.css\` のベーススタイル**
+   リセットCSSやフォント定義が含まれています。むやみに削除しないでください。
+
+---
+
+## 困ったときは
+
+- レイアウトが崩れた → \`git diff\` で変更を確認し、CSSクラス名が変わっていないか確認
+- 画像が表示されない → \`public/assets/\` にファイルが存在するかパスが正しいか確認
+- ビルドエラー → \`npm run dev\` のターミナル出力でエラーメッセージを確認
+- セクションが表示されない → \`src/App.tsx\` の import と JSX を確認
+
+がんばってください！素敵なサイトになることを応援しています。
 `
 
     // Build ZIP
@@ -2232,7 +2548,8 @@ app.get('/api/projects', async (_req, res) => {
       if (error) throw new Error(error.message)
       res.json({ projects: data || [] })
     } else {
-      res.json({ projects: [] })
+      const projects = await listProjects()
+      res.json({ projects })
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message })
@@ -2252,7 +2569,8 @@ app.post('/api/projects', async (req, res) => {
       if (error) throw new Error(error.message)
       res.json({ project: data })
     } else {
-      res.json({ project: { id: crypto.randomUUID(), name, canvas_json: [], created_at: new Date().toISOString() } })
+      const project = await createLocalProject(name)
+      res.json({ project })
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message })
@@ -2275,7 +2593,8 @@ app.put('/api/projects/:id', async (req, res) => {
       if (error) throw new Error(error.message)
       res.json({ project: data })
     } else {
-      res.json({ ok: true })
+      const project = await updateLocalProject(req.params.id, { name, canvas_json })
+      res.json({ project })
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message })
@@ -2286,6 +2605,8 @@ app.delete('/api/projects/:id', async (req, res) => {
   try {
     if (HAS_SUPABASE) {
       await supabaseAdmin.from('projects').delete().eq('id', req.params.id)
+    } else {
+      await deleteLocalProject(req.params.id)
     }
     res.json({ deleted: true })
   } catch (err: any) {

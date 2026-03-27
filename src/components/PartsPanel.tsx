@@ -205,7 +205,13 @@ export function PartsPanel({ sections, onAdd, onRemove, onViewTsx }: Props) {
                   {section.features_jsonb?.hasForm && <span className="meta-tag form">FORM</span>}
                 </div>
                 <div className="part-source">
-                  {section.source_sites?.normalized_domain || section.source_pages?.url?.replace(/https?:\/\//, '').split('/')[0] || ''}
+                  {section.source_pages?.url ? (
+                    <a href={section.source_pages.url} target="_blank" rel="noopener noreferrer" className="part-source-link" onClick={e => e.stopPropagation()}>
+                      {section.source_sites?.normalized_domain || section.source_pages.url.replace(/https?:\/\//, '').split('/')[0] || ''}
+                    </a>
+                  ) : (
+                    section.source_sites?.normalized_domain || ''
+                  )}
                 </div>
               </div>
             </div>
