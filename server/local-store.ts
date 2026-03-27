@@ -990,14 +990,21 @@ export async function createProjectPageBlock(record: JsonObject) {
 
 export async function cleanupCrawlRunSections(crawlRunId: string): Promise<{ duplicates: number; garbage: number; oversized: number }> {
   return withWriteLock(async db => {
-    const page = db.source_pages.find(p => p.crawl_run_id === crawlRunId)
-    if (!page) return { duplicates: 0, garbage: 0, oversized: 0 }
+    const pages = db.source_pages.filter(p => p.crawl_run_id === crawlRunId)
+    if (pages.length === 0) return { duplicates: 0, garbage: 0, oversized: 0 }
 
-    const pageSections = db.source_sections.filter(s => s.page_id === page.id)
+    const siteId = pages[0].site_id
+    const pageIds = new Set(pages.map(p => p.id))
+    const pageSections = db.source_sections.filter(s => pageIds.has(s.page_id))
     const toRemove = new Set<string>()
 
-    // 1. Duplicates: same block_family + similar text (first 50 chars)
-    const seen = new Map<string, string>() // key → first section id
+    // 1. Duplicates: サイト全体の既存セクションも含めてクロスページ重複除去
+    const existingSections = db.source_sections.filter(s => s.site_id === siteId && !pageIds.has(s.page_id))
+    const seen = new Map<string, string>()
+    for (const s of existingSections) {
+      const textKey = (s.text_summary || '').replace(/\s+/g, ' ').trim().slice(0, 50)
+      seen.set(`${s.block_family}::${textKey}`, s.id)
+    }
     for (const s of pageSections) {
       const textKey = (s.text_summary || '').replace(/\s+/g, ' ').trim().slice(0, 50)
       const key = `${s.block_family}::${textKey}`
