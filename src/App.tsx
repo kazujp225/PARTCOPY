@@ -400,9 +400,12 @@ export default function App() {
   }
 
   const handleSwitchProject = async (projectId: string) => {
-    // Save current
+    // Save current project's canvas before switching
     if (activeProjectId) {
       await fetch(`/api/projects/${activeProjectId}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({canvas_json: canvas}) }).catch(() => {})
+      setProjectList(prev => prev.map(p =>
+        p.id === activeProjectId ? { ...p, canvas_json: canvas } : p
+      ))
     }
     const target = projectList.find(p => p.id === projectId)
     if (target) {
@@ -440,6 +443,11 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ canvas_json: canvas })
     }).catch(() => {})
+
+    // ローカルのprojectListも更新（パーツ数が反映されるように）
+    setProjectList(prev => prev.map(p =>
+      p.id === projectId ? { ...p, canvas_json: canvas } : p
+    ))
 
     // トースト通知を表示
     setSaveToast({ projectId: projectId!, projectName })
