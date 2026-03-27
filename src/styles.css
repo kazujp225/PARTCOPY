@@ -1994,6 +1994,12 @@ body {
   object-position: top center;
 }
 
+.library-card-live {
+  height: 220px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
 .library-card-no-thumb {
   display: flex;
   align-items: center;

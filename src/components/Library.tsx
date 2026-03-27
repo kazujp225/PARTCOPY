@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { SourceSection, GenreInfo, BlockFamilyInfo } from '../types'
-// サムネイル画像を使用（iframeより軽量）
 import { FAMILY_COLORS, FAMILY_LABELS } from '../constants'
+import { SourcePreviewFrame } from './SourcePreviewFrame'
 
 type SortOption = 'newest' | 'confidence' | 'family' | 'source'
 
@@ -244,7 +244,11 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
               onMouseLeave={() => setHoveredId(null)}
             >
               <div className="library-card-thumb">
-                {section.thumbnail_storage_path ? (
+                {hoveredId === section.id && section.htmlUrl ? (
+                  <div className="library-card-live">
+                    <SourcePreviewFrame htmlUrl={section.htmlUrl} maxHeight={300} />
+                  </div>
+                ) : section.thumbnail_storage_path ? (
                   <img src={`/assets/${section.thumbnail_storage_path}`} alt={section.block_family} loading="lazy" />
                 ) : (
                   <div className="library-card-no-thumb">
