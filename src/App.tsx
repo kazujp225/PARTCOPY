@@ -492,6 +492,28 @@ export default function App() {
           </button>
         </nav>
 
+        <div className="sidebar-saved-projects">
+          <span className="sidebar-nav-label">SAVED PROJECTS</span>
+          {projectList.map(p => (
+            <button
+              key={p.id}
+              className={`sidebar-saved-btn ${p.id === activeProjectId ? 'active' : ''}`}
+              onClick={() => handleSwitchProject(p.id)}
+            >
+              <span className="sidebar-saved-name">{p.name}</span>
+              <span className="sidebar-saved-meta">{p.canvas_json?.length || 0}パーツ</span>
+            </button>
+          ))}
+          {canvasItems.length > 0 && (
+            <button className="sidebar-save-new-btn" onClick={handleSaveProject}>
+              + 現在のCanvasを保存
+            </button>
+          )}
+          {projectList.length === 0 && canvasItems.length === 0 && (
+            <p className="sidebar-saved-empty">パーツを選んで保存しましょう</p>
+          )}
+        </div>
+
         <nav className="sidebar-categories">
           <span className="sidebar-nav-label">SEARCH BY PARTS</span>
           <button
