@@ -648,77 +648,90 @@ async function processJob(job: any) {
     // finalUrl（リダイレクト後）も記録
     crawledUrls.add(mainResult.pageUrl)
 
-    // ========== サブページクロール ==========
+    // ========== サブページクロール（並列、同時2ページ） ==========
+    const PARALLEL_PAGES = 2
+
     if (maxPages > 1 && mainResult.collectedLinks.length > 0) {
-      // 最大 maxPages - 1 ページ（メインページ分を引く）
       const subPageLimit = maxPages - 1
       const candidateLinks = mainResult.collectedLinks.filter(link => !crawledUrls.has(link))
 
-      logger.info('Starting sub-page crawl', {
+      logger.info('Starting parallel sub-page crawl', {
         jobId: job.id,
         candidates: candidateLinks.length,
-        limit: subPageLimit
+        limit: subPageLimit,
+        concurrency: PARALLEL_PAGES
       })
 
       let subPagesCrawled = 0
+      let candidateIndex = 0
 
-      for (const subUrl of candidateLinks) {
-        if (subPagesCrawled >= subPageLimit) break
-        if (shuttingDown) break
+      // 候補からアクセス可能なURLを次のバッチ分取得
+      const getNextBatch = async (): Promise<string[]> => {
+        const batch: string[] = []
+        while (batch.length < PARALLEL_PAGES && candidateIndex < candidateLinks.length && subPagesCrawled + batch.length < subPageLimit) {
+          if (shuttingDown) break
+          const subUrl = candidateLinks[candidateIndex++]
+          if (crawledUrls.has(subUrl)) continue
+          crawledUrls.add(subUrl)
 
-        // 既にクロール済みのURLはスキップ
-        if (crawledUrls.has(subUrl)) continue
-        crawledUrls.add(subUrl)
+          const accessible = await isPageAccessible(subUrl)
+          if (!accessible) {
+            logger.info('Skipped: not accessible', { jobId: job.id, url: subUrl })
+            continue
+          }
+          batch.push(subUrl)
+        }
+        return batch
+      }
 
-        const subPageLabel = `ページ ${totalPageCount + 1}/${maxPages}`
+      while (subPagesCrawled < subPageLimit && candidateIndex < candidateLinks.length && !shuttingDown) {
+        const batch = await getNextBatch()
+        if (batch.length === 0) break
 
-        // アクセシビリティ事前チェック（HEAD リクエスト）
-        const accessible = await isPageAccessible(subUrl)
-        if (!accessible) {
-          logger.info(`${subPageLabel} Skipped: not accessible`, { jobId: job.id, url: subUrl })
-          continue
+        await setCrawlRunStatus(job.id, {
+          status: 'rendering',
+          status_detail: `サブページ ${subPagesCrawled + 1}〜${subPagesCrawled + batch.length}/${maxPages} 並列クロール中`
+        })
+
+        const results = await Promise.allSettled(
+          batch.map(async (subUrl) => {
+            const pageNum = totalPageCount + batch.indexOf(subUrl) + 1
+            const subPageLabel = `ページ ${pageNum}/${maxPages}`
+            return processOnePage(browser, subUrl, job, site, 'subpage', subPageLabel)
+          })
+        )
+
+        for (let i = 0; i < results.length; i++) {
+          const r = results[i]
+          if (r.status === 'fulfilled') {
+            crawledUrls.add(r.value.pageUrl)
+            totalSectionCount += r.value.sectionCount
+            totalPageCount++
+            subPagesCrawled++
+
+            for (const newLink of r.value.collectedLinks) {
+              if (!crawledUrls.has(newLink) && !candidateLinks.includes(newLink)) {
+                candidateLinks.push(newLink)
+              }
+            }
+
+            logger.info('Sub-page completed', {
+              jobId: job.id,
+              url: batch[i],
+              sections: r.value.sectionCount
+            })
+          } else {
+            logger.warn('Sub-page failed, continuing', {
+              jobId: job.id,
+              url: batch[i],
+              error: r.reason?.message
+            })
+          }
         }
 
-        try {
-          await setCrawlRunStatus(job.id, {
-            status: 'rendering',
-            status_detail: `${subPageLabel}: ${new URL(subUrl).pathname} クロール中`
-          })
-
-          const subResult = await processOnePage(browser, subUrl, job, site, 'subpage', subPageLabel)
-
-          // リダイレクト先も記録
-          crawledUrls.add(subResult.pageUrl)
-
-          totalSectionCount += subResult.sectionCount
-          totalPageCount++
-          subPagesCrawled++
-
-          // サブページから得たリンクも候補に追加（既存候補の後ろに）
-          for (const newLink of subResult.collectedLinks) {
-            if (!crawledUrls.has(newLink) && !candidateLinks.includes(newLink)) {
-              candidateLinks.push(newLink)
-            }
-          }
-
-          logger.info(`${subPageLabel} completed`, {
-            jobId: job.id,
-            url: subUrl,
-            sections: subResult.sectionCount,
-            newLinks: subResult.collectedLinks.length
-          })
-
-          // ページ間に短い遅延（サーバー負荷軽減）
-          await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000))
-
-        } catch (subErr: any) {
-          logger.warn(`${subPageLabel} failed, continuing`, {
-            jobId: job.id,
-            url: subUrl,
-            error: subErr.message
-          })
-          // サブページの失敗はジョブ全体を失敗させない
-          continue
+        // バッチ間に短い遅延（サーバー負荷軽減）
+        if (subPagesCrawled < subPageLimit && candidateIndex < candidateLinks.length) {
+          await new Promise(r => setTimeout(r, 500 + Math.random() * 1000))
         }
       }
     }
