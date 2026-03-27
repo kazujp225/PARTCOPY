@@ -49,7 +49,8 @@ import {
   rewriteCssAssetUrls,
   rewriteCssUrls,
   rewriteHtmlAssetUrls,
-  scopeCss
+  scopeCss,
+  scopeHtmlInlineVars
 } from './render-utils.js'
 
 /**
@@ -361,7 +362,7 @@ async function prepareSectionRender(sectionId: string): Promise<PreparedSectionR
     sectionId,
     blockFamily: record.section.block_family || 'section',
     scopeClass,
-    html: resolveRelativeUrls(html, pageOrigin),
+    html: scopeHtmlInlineVars(resolveRelativeUrls(html, pageOrigin), scopeClass),
     css: scopedCss,
     fontFaceCss
   }

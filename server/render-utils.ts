@@ -152,7 +152,10 @@ export function scopeCss(css: string, scopeClass: string) {
   const fontFaceCss: string[] = []
   const fontFaceSet = new Set<string>()
   const keyframeMap = collectKeyframeMap(css, scopeClass)
-  const scopedCss = transformCss(css, scopeClass, keyframeMap, fontFaceSet, fontFaceCss).trim()
+  let scopedCss = transformCss(css, scopeClass, keyframeMap, fontFaceSet, fontFaceCss).trim()
+
+  // CSS変数をセクション固有のスコープに書き換え
+  scopedCss = scopeCssVariables(scopedCss, scopeClass)
 
   return {
     scopedCss,
@@ -408,18 +411,79 @@ function splitTopLevelSelectors(selectorText: string) {
 }
 
 function rewriteAnimationNamesInDeclarations(block: string, keyframeMap: Map<string, string>) {
-  if (keyframeMap.size === 0) return block
+  let result = block
 
-  return block.replace(/(animation(?:-name)?\s*:\s*)([^;]+)/gi, (_match, prefix, value) => {
-    let rewrittenValue = String(value)
+  // Rewrite animation names
+  if (keyframeMap.size > 0) {
+    result = result.replace(/(animation(?:-name)?\s*:\s*)([^;]+)/gi, (_match, prefix, value) => {
+      let rewrittenValue = String(value)
 
-    for (const [originalName, scopedName] of keyframeMap.entries()) {
-      const nameRe = new RegExp(`(^|[^-_a-zA-Z0-9])(${escapeRegExp(originalName)})(?=$|[^-_a-zA-Z0-9])`, 'g')
-      rewrittenValue = rewrittenValue.replace(nameRe, (_innerMatch, boundary) => `${boundary}${scopedName}`)
-    }
+      for (const [originalName, scopedName] of keyframeMap.entries()) {
+        const nameRe = new RegExp(`(^|[^-_a-zA-Z0-9])(${escapeRegExp(originalName)})(?=$|[^-_a-zA-Z0-9])`, 'g')
+        rewrittenValue = rewrittenValue.replace(nameRe, (_innerMatch, boundary) => `${boundary}${scopedName}`)
+      }
 
-    return `${prefix}${rewrittenValue}`
+      return `${prefix}${rewrittenValue}`
+    })
+  }
+
+  return result
+}
+
+/**
+ * CSS変数をセクション固有のプレフィックス付きにスコープする。
+ * --foo → --pc-{hash}-foo（宣言と参照の両方）
+ * ブラウザ標準の変数（--tw-, --bs- 等のフレームワーク変数も含む）全てをスコープ。
+ */
+/**
+ * HTML内の inline style に含まれるCSS変数参照もスコープする。
+ * style="color: var(--primary)" → style="color: var(--pc-hash-primary)"
+ */
+export function scopeHtmlInlineVars(html: string, scopeClass: string): string {
+  const hash = scopeClass.replace('pc-sec-', '').slice(0, 8)
+  const prefix = `--pc-${hash}-`
+
+  // style属性内の var(--xxx) を書き換え
+  return html.replace(/style=(["'])([\s\S]*?)\1/gi, (match, quote, styleContent) => {
+    const rewritten = styleContent.replace(/var\(\s*(--[\w-]+)/g, (_m: string, varName: string) => {
+      return `var(${prefix}${varName.slice(2)}`
+    })
+    if (rewritten === styleContent) return match
+    return `style=${quote}${rewritten}${quote}`
   })
+}
+
+function scopeCssVariables(css: string, scopeClass: string): string {
+  // scopeClassからハッシュ部分を抽出（pc-sec-xxxx → xxxx の先頭8文字）
+  const hash = scopeClass.replace('pc-sec-', '').slice(0, 8)
+  const prefix = `--pc-${hash}-`
+
+  // 変数を収集（宣言側）
+  const varNames = new Set<string>()
+  css.replace(/(--[\w-]+)\s*:/g, (_m, name) => {
+    varNames.add(name)
+    return _m
+  })
+
+  if (varNames.size === 0) return css
+
+  let result = css
+
+  // 長い名前から順にリプレース（--primary-color を --primary より先に処理）
+  const sortedVars = [...varNames].sort((a, b) => b.length - a.length)
+
+  for (const varName of sortedVars) {
+    const scopedName = prefix + varName.slice(2) // --foo → --pc-{hash}-foo
+    const escaped = escapeRegExp(varName)
+
+    // 宣言: --foo: value → --pc-hash-foo: value
+    result = result.replace(new RegExp(`(${escaped})(\\s*:)`, 'g'), `${scopedName}$2`)
+
+    // 参照: var(--foo) → var(--pc-hash-foo)
+    result = result.replace(new RegExp(`var\\(\\s*${escaped}(?=[,)])`, 'g'), `var(${scopedName}`)
+  }
+
+  return result
 }
 
 function renameKeyframesHeader(header: string, keyframeMap: Map<string, string>) {
