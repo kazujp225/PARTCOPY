@@ -110,6 +110,8 @@ const images = {
 
 - クラス名はコンポーネントスコープを意識して、セクション固有のプレフィックス付きにすること
   例: .hero-heading, .hero-button, .pricing-card
+- 元サイトのCSS全体をコピーしないこと。このセクションで実際に使われているスタイルのみを含めること
+- 使われていないクラスのスタイルは含めないこと
 - @font-faceルールがある場合はstyleブロック先頭に含めること
 - @mediaクエリが元HTMLにあれば保持すること
 
@@ -124,6 +126,14 @@ const images = {
 - コメントは全て日本語で記述すること
 - 変数名・関数名・クラス名は英語で記述すること
 - TSXコードブロック(\`\`\`tsx ... \`\`\`)のみを返すこと（説明文は不要）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【映像要素の除去】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- <video>タグとその内容は完全に除去すること
+- YouTube/Vimeo/Dailymotionの<iframe>も完全に除去すること
+- 映像があった場所には何も出力しないこと（プレースホルダー不要）
+- <img>タグは画像なので除去しないこと（映像とは別）
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【出力例の骨格】
@@ -190,13 +200,27 @@ export async function convertHtmlToTsx(html: string, blockFamily?: string): Prom
 
   const prompt = CONVERT_PROMPT.replace(/SectionComponent/g, componentName) + truncatedHtml
 
+  // Try conversion with retry on failure
+  try {
+    return await runClaudeConversion(prompt)
+  } catch (firstError: any) {
+    logger.warn('Claude conversion failed, retrying once', { error: firstError.message })
+    try {
+      return await runClaudeConversion(prompt)
+    } catch (retryError: any) {
+      logger.error('Claude conversion failed after retry', { error: retryError.message })
+      throw retryError
+    }
+  }
+}
+
+function runClaudeConversion(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
     let settled = false
     const settle = (fn: () => void) => {
       if (!settled) { settled = true; fn() }
     }
 
-    // ローカル認証済みの claude CLI を使用
     const child = spawn('claude', ['-p', '-'], {
       env: {
         PATH: process.env.PATH,
@@ -220,7 +244,6 @@ export async function convertHtmlToTsx(html: string, blockFamily?: string): Prom
         return
       }
 
-      // Extract TSX code from response (may be wrapped in ```tsx ... ```)
       let tsxCode = stdout.trim()
       const codeBlockMatch = tsxCode.match(/```(?:tsx|jsx|typescript|javascript)?\s*\n([\s\S]*?)```/)
       if (codeBlockMatch) {
@@ -239,7 +262,6 @@ export async function convertHtmlToTsx(html: string, blockFamily?: string): Prom
       settle(() => reject(new Error(`Claude CLIが見つかりません: ${err.message}`)))
     })
 
-    // プロンプトをstdinに書き込み
     child.stdin.write(prompt)
     child.stdin.end()
   })

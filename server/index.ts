@@ -50,7 +50,8 @@ import {
   rewriteCssUrls,
   rewriteHtmlAssetUrls,
   scopeCss,
-  scopeHtmlInlineVars
+  scopeHtmlInlineVars,
+  stripVideoElements
 } from './render-utils.js'
 
 /**
@@ -234,6 +235,26 @@ body {
 [data-partcopy-section] {
   display: block;
   width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  float: none;
+  clear: both;
+  position: relative;
+  overflow: hidden;
+}
+
+[data-partcopy-section] > *:first-child {
+  margin-top: 0 !important;
+}
+
+[data-partcopy-section] > *:last-child {
+  margin-bottom: 0 !important;
+}
+
+.pc-preview-page > [data-partcopy-section] + [data-partcopy-section] {
+  border-top: none;
+  margin-top: 0;
 }
 `.trim()
 
@@ -362,7 +383,7 @@ async function prepareSectionRender(sectionId: string): Promise<PreparedSectionR
     sectionId,
     blockFamily: record.section.block_family || 'section',
     scopeClass,
-    html: scopeHtmlInlineVars(resolveRelativeUrls(html, pageOrigin), scopeClass),
+    html: stripVideoElements(scopeHtmlInlineVars(resolveRelativeUrls(html, pageOrigin), scopeClass)),
     css: scopedCss,
     fontFaceCss
   }
@@ -440,6 +461,43 @@ function toPascalCase(value: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join('') || 'Section'
+}
+
+function extractTextsForGuide(html: string): string[] {
+  const texts: string[] = []
+  // Extract heading texts
+  const headingRe = /<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi
+  let match
+  while ((match = headingRe.exec(html)) !== null) {
+    const text = match[1].replace(/<[^>]+>/g, '').trim()
+    if (text && text.length > 0 && text.length < 200) texts.push(text)
+  }
+  // Extract button/link texts
+  const btnRe = /<(?:button|a)\b[^>]*>([\s\S]*?)<\/(?:button|a)>/gi
+  while ((match = btnRe.exec(html)) !== null) {
+    const text = match[1].replace(/<[^>]+>/g, '').trim()
+    if (text && text.length > 0 && text.length < 100) texts.push(text)
+  }
+  // Extract paragraph texts (first 50 chars)
+  const pRe = /<p\b[^>]*>([\s\S]*?)<\/p>/gi
+  while ((match = pRe.exec(html)) !== null) {
+    const text = match[1].replace(/<[^>]+>/g, '').trim()
+    if (text && text.length > 10) texts.push(text.slice(0, 80) + (text.length > 80 ? '...' : ''))
+  }
+  return [...new Set(texts)].slice(0, 15)
+}
+
+function extractImagesForGuide(html: string): string[] {
+  const images: string[] = []
+  const imgRe = /src=["']([^"']+)["']/gi
+  let match
+  while ((match = imgRe.exec(html)) !== null) {
+    const src = match[1]
+    if (/\.(png|jpe?g|gif|webp|avif|svg)/i.test(src)) {
+      images.push(src)
+    }
+  }
+  return [...new Set(images)].slice(0, 15)
 }
 
 async function loadExportAssetSource(sourceUrl: string) {
@@ -1819,12 +1877,8 @@ app.post('/api/sections/:sectionId/convert-tsx', async (req, res) => {
 
     const tsx = await convertHtmlToTsx(scopedHtml, blockFamily)
 
-    // Inject scoped CSS into the TSX component
-    const cssComment = allCss
-      ? `\n// Scoped CSS for this section\nconst scopedCss = ${JSON.stringify(allCss)};\n`
-      : ''
-
-    res.json({ tsx: cssComment + tsx, blockFamily, scopeClass })
+    // Return TSX without double-injecting CSS (Claude's output already contains <style> blocks)
+    res.json({ tsx, blockFamily, scopeClass })
   } catch (err: any) {
     logger.error('TSX conversion failed', { sectionId, error: err.message })
     res.status(500).json({ error: safeErrorMessage(err) })
@@ -1899,6 +1953,11 @@ app.post('/api/export/zip', async (req, res) => {
     const exportAssets: ExportAssetFile[] = []
     const componentCounts = new Map<string, number>()
     const globalFontFaceCss: string[] = []
+    const failedAssetUrls = new Set<string>()
+
+    function escapeStringForRegex(str: string) {
+      return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    }
 
     const ensureExportAsset = async (sourceUrl: string) => {
       if (exportAssetPathBySource.has(sourceUrl)) {
@@ -1906,7 +1965,10 @@ app.post('/api/export/zip', async (req, res) => {
       }
 
       const resolvedAsset = await loadExportAssetSource(sourceUrl)
-      if (!resolvedAsset) return undefined
+      if (!resolvedAsset) {
+        failedAssetUrls.add(sourceUrl)
+        return undefined
+      }
 
       let exportPath = exportAssetPathByKey.get(resolvedAsset.key)
       if (!exportPath) {
@@ -1928,7 +1990,7 @@ app.post('/api/export/zip', async (req, res) => {
       return exportPath
     }
 
-    const components: { name: string; tsx: string; blockFamily: string }[] = []
+    const components: { name: string; tsx: string; blockFamily: string; cssFile?: string }[] = []
 
     // Regex to collect absolute URLs from TSX string literals (both single and double quoted)
     const TSX_URL_RE = /(?:['"])(https?:\/\/[^'"\s]+)(?:['"])/g
@@ -2022,6 +2084,11 @@ app.post('/api/export/zip', async (req, res) => {
         // Rewrite absolute URLs in TSX to /assets/ relative paths
         let tsx = rewriteTsxAssetUrls(storedTsx, (url) => exportAssetPathBySource.get(url))
 
+        // Remove references to failed assets (replace with empty placeholder comment)
+        for (const failedUrl of failedAssetUrls) {
+          tsx = tsx.replace(new RegExp(escapeStringForRegex(failedUrl), 'g'), '/assets/placeholder.svg')
+        }
+
         // Rename the default export to match our component naming
         tsx = renameTsxDefaultExport(tsx, componentName)
 
@@ -2031,7 +2098,7 @@ app.post('/api/export/zip', async (req, res) => {
 
         components.push({ name: componentName, tsx, blockFamily: prepared.blockFamily })
       } else {
-        // --- Fallback: dangerouslySetInnerHTML with raw HTML ---
+        // --- Fallback: structured HTML with separate CSS file ---
 
         const sectionAssetUrls = dedupeStrings([
           ...collectHtmlAssetUrls(prepared.html),
@@ -2043,17 +2110,51 @@ app.post('/api/export/zip', async (req, res) => {
           await ensureExportAsset(sourceUrl)
         }
 
-        const html = rewriteHtmlAssetUrls(prepared.html, (url) => exportAssetPathBySource.get(url))
+        let html = rewriteHtmlAssetUrls(prepared.html, (url) => exportAssetPathBySource.get(url))
+        // Replace failed asset URLs with placeholder
+        for (const failedUrl of failedAssetUrls) {
+          html = html.replace(new RegExp(escapeStringForRegex(failedUrl), 'g'), '/assets/placeholder.svg')
+        }
         const css = rewriteCssUrls(prepared.css, (url) => exportAssetPathBySource.get(url))
         const fontFaceCss = prepared.fontFaceCss.map((block) => rewriteCssUrls(block, (url) => exportAssetPathBySource.get(url)))
         globalFontFaceCss.push(...fontFaceCss)
 
+        // Strip video elements from fallback HTML
+        html = stripVideoElements(html)
+
+        // Extract texts and images for edit guide
+        const extractedTexts = extractTextsForGuide(html)
+        const extractedImages = extractImagesForGuide(html)
+
         const escapedHtml = escapeTemplateLiteral(html)
-        const escapedCss = escapeTemplateLiteral(css)
 
-        const tsx = `export default function ${componentName}() {\n  return (\n    <>\n${escapedCss ? `      <style dangerouslySetInnerHTML={{ __html: \`${escapedCss}\` }} />\n` : ''}      <section className="${prepared.scopeClass}" data-partcopy-section="${prepared.sectionId}" dangerouslySetInnerHTML={{ __html: \`${escapedHtml}\` }} />\n    </>\n  )\n}\n`
+        // Generate edit guide comment
+        const guideTexts = extractedTexts.map(t => ` * - "${t}"`).join('\n')
+        const guideImages = extractedImages.map(t => ` * - ${t}`).join('\n')
+        const editGuide = `/*
+ * ========================================
+ * 編集ガイド - ${componentName}
+ * ========================================
+ *
+ * 【テキスト一覧】（HTML内で直接編集可能）
+${guideTexts || ' * （テキストなし）'}
+ *
+ * 【画像パス一覧】
+${guideImages || ' * （画像なし）'}
+ *
+ * 【編集方法】
+ * - テキスト: dangerouslySetInnerHTML内のHTMLを直接編集
+ * - 画像: src属性のパスを変更（public/assets/に配置）
+ * - スタイル: ${componentName}.css を編集
+ * - レイアウト: CSS内の該当クラスを修正
+ */`
 
-        components.push({ name: componentName, tsx, blockFamily: prepared.blockFamily })
+        const tsx = `import './${componentName}.css'\n\n${editGuide}\n\nexport default function ${componentName}() {\n  return (\n    <section\n      className="${prepared.scopeClass}"\n      data-partcopy-section="${prepared.sectionId}"\n      dangerouslySetInnerHTML={{ __html: \`${escapedHtml}\` }}\n    />\n  )\n}\n`
+
+        // Store CSS separately
+        const componentCssContent = `/* ${componentName} - Scoped CSS (auto-generated by PARTCOPY) */\n/* セクションスコープ: .${prepared.scopeClass} */\n\n${css}\n`
+
+        components.push({ name: componentName, tsx, blockFamily: prepared.blockFamily, cssFile: componentCssContent })
       }
     }
 
@@ -2442,10 +2543,19 @@ npm run build を実行して本番用ビルドを作成してください。
 
     for (const comp of components) {
       archive.append(comp.tsx, { name: `src/components/${comp.name}.tsx` })
+      if (comp.cssFile) {
+        archive.append(comp.cssFile, { name: `src/components/${comp.name}.css` })
+      }
     }
 
     for (const asset of exportAssets) {
       archive.append(asset.buffer, { name: `public${asset.exportPath}`.replace(/^\//, '') })
+    }
+
+    // Add placeholder for missing assets
+    if (failedAssetUrls.size > 0) {
+      const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300"><rect width="400" height="300" fill="#f0f0f0"/><text x="200" y="150" text-anchor="middle" fill="#999" font-family="sans-serif" font-size="14">Image not available</text></svg>`
+      archive.append(placeholderSvg, { name: 'public/assets/placeholder.svg' })
     }
 
     await archive.finalize()

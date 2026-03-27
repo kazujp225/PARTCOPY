@@ -464,10 +464,14 @@ export async function detectSections(page: Page): Promise<DetectedSection[]> {
         classTokens.push(...childClasses)
       }
 
+      // Strip video/iframe elements for clean output
+      const cleanEl = el.cloneNode(true) as Element
+      cleanEl.querySelectorAll('video, iframe[src*="youtube"], iframe[src*="vimeo"], iframe[src*="dailymotion"]').forEach(v => v.remove())
+
       return {
         index,
         tagName: el.tagName,
-        outerHTML: el.outerHTML,
+        outerHTML: cleanEl.outerHTML,
         previewHTML: buildPreviewHTML(el),
         textContent: (el.textContent || '').slice(0, 3000),
         domPath: getDomPath(el),

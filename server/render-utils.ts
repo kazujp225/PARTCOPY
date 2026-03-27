@@ -453,6 +453,28 @@ export function scopeHtmlInlineVars(html: string, scopeClass: string): string {
   })
 }
 
+/**
+ * Strip video and external video iframe elements from HTML string.
+ * Used at export/render time to remove video content that cannot be edited.
+ */
+export function stripVideoElements(html: string): string {
+  // Remove <video>...</video> blocks (including nested <source> elements)
+  let result = html.replace(/<video\b[\s\S]*?<\/video>/gi, '')
+  // Remove self-closing <video .../>
+  result = result.replace(/<video\b[^>]*\/>/gi, '')
+  // Remove YouTube iframes
+  result = result.replace(/<iframe\b[^>]*\bsrc=["'][^"']*youtube[^"']*["'][^>]*>[\s\S]*?<\/iframe>/gi, '')
+  result = result.replace(/<iframe\b[^>]*\bsrc=["'][^"']*youtube[^"']*["'][^>]*\/>/gi, '')
+  // Remove Vimeo iframes
+  result = result.replace(/<iframe\b[^>]*\bsrc=["'][^"']*vimeo[^"']*["'][^>]*>[\s\S]*?<\/iframe>/gi, '')
+  result = result.replace(/<iframe\b[^>]*\bsrc=["'][^"']*vimeo[^"']*["'][^>]*\/>/gi, '')
+  // Remove Dailymotion iframes
+  result = result.replace(/<iframe\b[^>]*\bsrc=["'][^"']*dailymotion[^"']*["'][^>]*>[\s\S]*?<\/iframe>/gi, '')
+  result = result.replace(/<iframe\b[^>]*\bsrc=["'][^"']*dailymotion[^"']*["'][^>]*\/>/gi, '')
+  // Clean up empty wrapper divs that only contained video (optional, minimal cleanup)
+  return result
+}
+
 function scopeCssVariables(css: string, scopeClass: string): string {
   // scopeClassからハッシュ部分を抽出（pc-sec-xxxx → xxxx の先頭8文字）
   const hash = scopeClass.replace('pc-sec-', '').slice(0, 8)
