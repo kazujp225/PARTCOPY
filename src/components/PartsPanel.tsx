@@ -1,27 +1,7 @@
 import React, { useState, useMemo, useCallback } from 'react'
 import { SourceSection } from '../types'
 // サムネイル画像を使用（iframeより軽量）
-import { FAMILY_COLORS } from '../constants'
-
-const FAMILY_LABELS: Record<string, string> = {
-  navigation: 'ナビ',
-  hero: 'ヒーロー',
-  feature: '特徴',
-  social_proof: '実績・声',
-  stats: '数値',
-  pricing: '料金',
-  faq: 'FAQ',
-  content: 'コンテンツ',
-  cta: 'CTA',
-  contact: 'お問い合わせ',
-  recruit: '採用',
-  footer: 'フッター',
-  news_list: 'お知らせ',
-  timeline: '沿革',
-  company_profile: '会社概要',
-  gallery: 'ギャラリー',
-  logo_cloud: 'ロゴ一覧'
-}
+import { FAMILY_COLORS, FAMILY_LABELS } from '../constants'
 
 
 type SortOption = 'position' | 'confidence' | 'family' | 'source'

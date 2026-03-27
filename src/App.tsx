@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react'
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { SourceSection, CanvasBlock, CrawlJob, JobStatus } from './types'
 import { URLInput } from './components/URLInput'
 import { PartsPanel } from './components/PartsPanel'
@@ -8,6 +8,7 @@ import { Library } from './components/Library'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { TsxModal } from './components/TsxModal'
 import { Dashboard } from './components/Dashboard'
+import { FAMILY_COLORS, FAMILY_LABELS, FAMILY_ICONS } from './constants'
 import './styles.css'
 
 type View = 'dashboard' | 'editor' | 'preview' | 'library'
@@ -53,6 +54,7 @@ export default function App() {
   const [selectedUrls, setSelectedUrls] = useState<Set<string>>(new Set())
   const [newProjectName, setNewProjectName] = useState('')
   const [showNewProject, setShowNewProject] = useState(false)
+  const [saveToast, setSaveToast] = useState<{ projectId: string; projectName: string } | null>(null)
 
   // Persist canvas to localStorage + Supabase project (debounced)
   useEffect(() => {
@@ -205,6 +207,16 @@ export default function App() {
       .map(section => section.source_sites?.normalized_domain)
       .filter((domain): domain is string => Boolean(domain))
   ).size
+
+  // Category counts for sidebar (STOCK DESIGN style)
+  const familyCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    sections.forEach(s => {
+      const fam = s.block_family || 'content'
+      counts[fam] = (counts[fam] || 0) + 1
+    })
+    return counts
+  }, [sections])
 
   const stopPolling = () => {
     if (pollRef.current) {
@@ -401,9 +413,37 @@ export default function App() {
   }
 
   const handleSaveProject = async () => {
-    if (!activeProjectId) return
-    await fetch(`/api/projects/${activeProjectId}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({canvas_json: canvas}) }).catch(() => {})
-    alert('保存しました')
+    let projectId = activeProjectId
+    let projectName = projectList.find(p => p.id === projectId)?.name || ''
+
+    // プロジェクトが未作成の場合は自動作成
+    if (!projectId) {
+      const name = prompt('プロジェクト名を入力してください', '新規プロジェクト')
+      if (!name) return
+      try {
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        })
+        if (!res.ok) return
+        const { project } = await res.json()
+        setProjectList(prev => [project, ...prev])
+        setActiveProjectId(project.id)
+        projectId = project.id
+        projectName = project.name
+      } catch { return }
+    }
+
+    await fetch(`/api/projects/${projectId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ canvas_json: canvas })
+    }).catch(() => {})
+
+    // トースト通知を表示
+    setSaveToast({ projectId: projectId!, projectName })
+    setTimeout(() => setSaveToast(null), 5000)
   }
 
   const handleDeleteProject = async (projectId: string) => {
@@ -430,25 +470,57 @@ export default function App() {
       <aside className="sidebar">
         <div className="sidebar-logo">
           <h1>PARTCOPY</h1>
-          <span>サイト構造解析ツール</span>
+          <span className="sidebar-tagline">Web Design Parts Gallery</span>
         </div>
+
+        <div className="sidebar-total">
+          <span className="sidebar-total-num">{sections.length}</span>
+          <span className="sidebar-total-label">DESIGN STOCK</span>
+        </div>
+
         <nav className="sidebar-nav">
-          <span className="sidebar-nav-label">メニュー</span>
+          <span className="sidebar-nav-label">MENU</span>
           <button className={`sidebar-nav-btn ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>
-            ダッシュボード
+            <span className="sidebar-nav-icon">&#9632;</span> ダッシュボード
           </button>
           <button className={`sidebar-nav-btn ${view === 'editor' ? 'active' : ''}`} onClick={() => setView('editor')}>
-            編集
-          </button>
-          <button className={`sidebar-nav-btn ${view === 'library' ? 'active' : ''}`} onClick={() => setView('library')}>
-            ライブラリ
+            <span className="sidebar-nav-icon">&#9998;</span> エディタ
+            {canvas.length > 0 && <span className="sidebar-nav-count">{canvas.length}</span>}
           </button>
           <button className={`sidebar-nav-btn ${view === 'preview' ? 'active' : ''}`} onClick={() => setView('preview')}>
-            プレビュー
+            <span className="sidebar-nav-icon">&#9655;</span> プレビュー
           </button>
         </nav>
+
+        <nav className="sidebar-categories">
+          <span className="sidebar-nav-label">SEARCH BY PARTS</span>
+          <button
+            className={`sidebar-cat-btn ${view === 'library' && !selectedSite ? 'active' : ''}`}
+            onClick={() => { setView('library'); setSelectedSite(null) }}
+          >
+            <span className="sidebar-cat-icon">&#9733;</span>
+            <span className="sidebar-cat-name">すべて</span>
+            <span className="sidebar-cat-count">{sections.length}</span>
+          </button>
+          {Object.entries(familyCounts)
+            .sort((a, b) => b[1] - a[1])
+            .map(([family, count]) => (
+              <button
+                key={family}
+                className={`sidebar-cat-btn ${view === 'library' && selectedSite === family ? 'active' : ''}`}
+                onClick={() => { setView('library'); setSelectedSite(family) }}
+              >
+                <span className="sidebar-cat-icon" style={{ color: FAMILY_COLORS[family] || '#94a3b8' }}>
+                  {FAMILY_ICONS[family] || '●'}
+                </span>
+                <span className="sidebar-cat-name">{FAMILY_LABELS[family] || family}</span>
+                <span className="sidebar-cat-count">{count}</span>
+              </button>
+            ))}
+        </nav>
+
         <div className="sidebar-projects">
-          <span className="sidebar-nav-label">プロジェクト</span>
+          <span className="sidebar-nav-label">PROJECT</span>
           {projectList.map(p => (
             <button
               key={p.id}
@@ -493,10 +565,11 @@ export default function App() {
             </button>
           )}
         </div>
+
         <div className="sidebar-stats">
-          <div className="sidebar-stat">パーツ <strong>{sections.length}</strong></div>
-          <div className="sidebar-stat">サイト <strong>{sourceCount}</strong></div>
-          <div className="sidebar-stat">Canvas <strong>{canvas.length}</strong></div>
+          <div className="sidebar-stat"><span>{sourceCount}</span> サイト</div>
+          <div className="sidebar-stat"><span>{Object.keys(familyCounts).length}</span> 種別</div>
+          <div className="sidebar-stat"><span>{canvas.length}</span> Canvas</div>
         </div>
       </aside>
 
@@ -507,13 +580,13 @@ export default function App() {
       {view === 'editor' && (
         <div className="editor-layout">
           <PartsPanel sections={filteredSections} onAdd={addToCanvas} onRemove={removeSection} onViewTsx={handleViewTsx} />
-          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onExportZip={handleExportZip} exporting={exporting} onSaveProject={activeProjectId ? handleSaveProject : undefined} onNewProject={() => setShowNewProject(true)} />
+          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onExportZip={handleExportZip} exporting={exporting} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} />
         </div>
       )}
 
       {view === 'preview' && <Preview items={canvasItems} onExportZip={handleExportZip} exporting={exporting} />}
 
-      {view === 'library' && <Library onAddToCanvas={addSavedToCanvas} />}
+      {view === 'library' && <Library onAddToCanvas={addSavedToCanvas} initialFamily={selectedSite} />}
 
       {tsxResult && (
         <TsxModal
@@ -521,6 +594,24 @@ export default function App() {
           familyName={tsxResult.familyName}
           onClose={() => setTsxResult(null)}
         />
+      )}
+
+      {saveToast && (
+        <div className="save-toast">
+          <span className="save-toast-check">&#10003;</span>
+          <span>「{saveToast.projectName}」に保存しました</span>
+          <button
+            className="save-toast-btn"
+            onClick={() => {
+              handleSwitchProject(saveToast.projectId)
+              setView('preview')
+              setSaveToast(null)
+            }}
+          >
+            プレビューで見る &rarr;
+          </button>
+          <button className="save-toast-close" onClick={() => setSaveToast(null)}>&times;</button>
+        </div>
       )}
 
       {loading && (
