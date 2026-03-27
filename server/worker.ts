@@ -12,6 +12,7 @@ import {
   claimQueuedJob,
   cleanupCrawlRunSections,
   cleanupOldData,
+  removeOlderCrawlSections,
   createSectionDomSnapshot,
   createSourcePage,
   createSourceSection,
@@ -746,6 +747,12 @@ async function processJob(job: any) {
         garbage: cleanup.garbage,
         oversized: cleanup.oversized
       })
+    }
+
+    // ========== Remove sections from older crawl runs ==========
+    const removedOld = await removeOlderCrawlSections(site.id, job.id)
+    if (removedOld > 0) {
+      logger.info('Removed older crawl sections', { jobId: job.id, siteId: site.id, removedSections: removedOld })
     }
 
     // ========== Mark complete ==========

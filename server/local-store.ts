@@ -1087,6 +1087,49 @@ export async function cleanupCrawlRunSections(crawlRunId: string): Promise<{ dup
   })
 }
 
+/**
+ * 同一サイトの古いクロールRunのセクションを削除する。
+ * 最新のcrawlRunIdのみ残し、それ以前のRunのセクション・ページ・Runを削除。
+ */
+export async function removeOlderCrawlSections(siteId: string, keepCrawlRunId: string): Promise<number> {
+  return withWriteLock(async db => {
+    const olderRuns = db.crawl_runs.filter(r => r.site_id === siteId && r.id !== keepCrawlRunId)
+    if (olderRuns.length === 0) return 0
+
+    const olderRunIds = new Set(olderRuns.map(r => r.id))
+    const olderPages = db.source_pages.filter(p => olderRunIds.has(p.crawl_run_id))
+    const olderPageIds = new Set(olderPages.map(p => p.id))
+    const olderSections = db.source_sections.filter(s => olderPageIds.has(s.page_id))
+    const olderSectionIds = new Set(olderSections.map(s => s.id))
+
+    if (olderSectionIds.size === 0 && olderPages.length === 0) {
+      // Run records only, no pages/sections
+      db.crawl_runs = db.crawl_runs.filter(r => !olderRunIds.has(r.id))
+      return 0
+    }
+
+    const snapshotIds = new Set(
+      db.section_dom_snapshots.filter(snap => olderSectionIds.has(snap.section_id)).map(snap => snap.id)
+    )
+    const patchSetIds = new Set(
+      db.section_patch_sets.filter(ps => olderSectionIds.has(ps.section_id)).map(ps => ps.id)
+    )
+
+    db.source_sections = db.source_sections.filter(s => !olderSectionIds.has(s.id))
+    db.section_dom_snapshots = db.section_dom_snapshots.filter(snap => !olderSectionIds.has(snap.section_id))
+    db.section_nodes = db.section_nodes.filter(node => !snapshotIds.has(node.snapshot_id))
+    db.block_instances = db.block_instances.filter(bi => !olderSectionIds.has(bi.source_section_id))
+    db.section_patch_sets = db.section_patch_sets.filter(ps => !olderSectionIds.has(ps.section_id))
+    db.section_patches = db.section_patches.filter(p => !patchSetIds.has(p.patch_set_id))
+    db.project_page_blocks = db.project_page_blocks.filter(b => !olderSectionIds.has(b.source_section_id))
+    db.page_assets = db.page_assets.filter(pa => !olderPageIds.has(pa.page_id))
+    db.source_pages = db.source_pages.filter(p => !olderPageIds.has(p.id))
+    db.crawl_runs = db.crawl_runs.filter(r => !olderRunIds.has(r.id))
+
+    return olderSections.length
+  })
+}
+
 // ============================================================
 // Projects CRUD
 // ============================================================
