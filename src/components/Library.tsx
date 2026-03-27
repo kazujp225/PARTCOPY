@@ -1,19 +1,20 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { SourceSection, GenreInfo, BlockFamilyInfo } from '../types'
 // サムネイル画像を使用（iframeより軽量）
-import { FAMILY_COLORS } from '../constants'
+import { FAMILY_COLORS, FAMILY_LABELS } from '../constants'
 
 type SortOption = 'newest' | 'confidence' | 'family' | 'source'
 
 interface Props {
   onAddToCanvas: (section: SourceSection) => void
+  initialFamily?: string | null
 }
 
-export function Library({ onAddToCanvas }: Props) {
+export function Library({ onAddToCanvas, initialFamily }: Props) {
   const [genres, setGenres] = useState<GenreInfo[]>([])
   const [families, setFamilies] = useState<BlockFamilyInfo[]>([])
   const [selectedGenre, setSelectedGenre] = useState<string | null>(null)
-  const [selectedFamily, setSelectedFamily] = useState<string | null>(null)
+  const [selectedFamily, setSelectedFamily] = useState<string | null>(initialFamily || null)
   const [sections, setSections] = useState<SourceSection[]>([])
   const [loading, setLoading] = useState(false)
   const [hoveredId, setHoveredId] = useState<string | null>(null)
@@ -24,6 +25,11 @@ export function Library({ onAddToCanvas }: Props) {
   const [onlyForm, setOnlyForm] = useState(false)
   const [onlyImages, setOnlyImages] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Sync with sidebar category selection
+  useEffect(() => {
+    if (initialFamily !== undefined) setSelectedFamily(initialFamily || null)
+  }, [initialFamily])
 
   const familyLabelMap = families.reduce<Record<string, string>>((acc, family) => {
     acc[family.key] = family.label_ja || family.label || family.key
@@ -239,34 +245,34 @@ export function Library({ onAddToCanvas }: Props) {
             >
               <div className="library-card-thumb">
                 {section.thumbnail_storage_path ? (
-                  <img src={`/assets/${section.thumbnail_storage_path}`} alt={section.block_family} loading="lazy" style={{ width: '100%', height: 'auto', maxHeight: 200, objectFit: 'cover', objectPosition: 'top center', display: 'block' }} />
+                  <img src={`/assets/${section.thumbnail_storage_path}`} alt={section.block_family} loading="lazy" />
                 ) : (
-                  <div className="library-card-no-thumb">プレビューなし</div>
+                  <div className="library-card-no-thumb">
+                    <span className="library-card-no-thumb-icon" style={{ color: FAMILY_COLORS[section.block_family] || '#94a3b8' }}>
+                      {FAMILY_LABELS[section.block_family] || section.block_family}
+                    </span>
+                  </div>
                 )}
-                <div className="part-overlay-top">
-                  <span className="part-type-badge" style={{ background: FAMILY_COLORS[section.block_family] || '#94a3b8' }}>
+                <div className="library-card-category">
+                  <span style={{ background: FAMILY_COLORS[section.block_family] || '#94a3b8' }}>
                     {familyLabelMap[section.block_family] || section.block_family}
                   </span>
                 </div>
                 {hoveredId === section.id && (
-                  <div className="part-overlay-actions">
-                    <button className="add-btn-large" onClick={() => onAddToCanvas(section)}>+ 追加</button>
-                    <button className="remove-btn-small" onClick={() => handleDelete(section.id)}>削除</button>
+                  <div className="library-card-hover">
+                    <button className="library-card-add" onClick={() => onAddToCanvas(section)}>+ Canvasに追加</button>
+                    <button className="library-card-delete" onClick={() => handleDelete(section.id)}>削除</button>
                   </div>
                 )}
               </div>
-              <div className="part-content library-card-content">
-                {section.block_variant && <div className="part-variant">{section.block_variant}</div>}
-                {section.text_summary && <p className="part-summary">{section.text_summary}</p>}
-                <div className="library-card-info">
-                  <div className="library-card-genre">
-                    {section.source_sites?.genre && <span className="genre-badge">{section.source_sites.genre}</span>}
-                    {section.source_sites?.tags?.map(tag => <span key={tag} className="tag-badge">{tag}</span>)}
-                    {section.features_jsonb?.hasImages && <span className="meta-tag">IMG</span>}
-                    {section.features_jsonb?.hasCTA && <span className="meta-tag cta">CTA</span>}
-                    {section.features_jsonb?.hasForm && <span className="meta-tag form">FORM</span>}
-                  </div>
-                  <div className="part-source">{section.source_sites?.normalized_domain || ''}</div>
+              <div className="library-card-body">
+                <h3 className="library-card-title">{section.source_sites?.normalized_domain || 'Unknown'}</h3>
+                {section.text_summary && <p className="library-card-desc">{section.text_summary}</p>}
+                <div className="library-card-meta">
+                  {section.source_sites?.genre && <span className="library-card-genre-tag">{section.source_sites.genre}</span>}
+                  {section.features_jsonb?.hasImages && <span className="library-card-feat">IMG</span>}
+                  {section.features_jsonb?.hasCTA && <span className="library-card-feat cta">CTA</span>}
+                  {section.features_jsonb?.hasForm && <span className="library-card-feat form">FORM</span>}
                 </div>
               </div>
             </div>

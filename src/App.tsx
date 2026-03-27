@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react'
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { SourceSection, CanvasBlock, CrawlJob, JobStatus } from './types'
 import { URLInput } from './components/URLInput'
 import { PartsPanel } from './components/PartsPanel'
@@ -8,6 +8,7 @@ import { Library } from './components/Library'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { TsxModal } from './components/TsxModal'
 import { Dashboard } from './components/Dashboard'
+import { FAMILY_COLORS, FAMILY_LABELS, FAMILY_ICONS } from './constants'
 import './styles.css'
 
 type View = 'dashboard' | 'editor' | 'preview' | 'library'
@@ -206,6 +207,16 @@ export default function App() {
       .map(section => section.source_sites?.normalized_domain)
       .filter((domain): domain is string => Boolean(domain))
   ).size
+
+  // Category counts for sidebar (STOCK DESIGN style)
+  const familyCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    sections.forEach(s => {
+      const fam = s.block_family || 'content'
+      counts[fam] = (counts[fam] || 0) + 1
+    })
+    return counts
+  }, [sections])
 
   const stopPolling = () => {
     if (pollRef.current) {
@@ -459,25 +470,57 @@ export default function App() {
       <aside className="sidebar">
         <div className="sidebar-logo">
           <h1>PARTCOPY</h1>
-          <span>サイト構造解析ツール</span>
+          <span className="sidebar-tagline">Web Design Parts Gallery</span>
         </div>
+
+        <div className="sidebar-total">
+          <span className="sidebar-total-num">{sections.length}</span>
+          <span className="sidebar-total-label">DESIGN STOCK</span>
+        </div>
+
         <nav className="sidebar-nav">
-          <span className="sidebar-nav-label">メニュー</span>
+          <span className="sidebar-nav-label">MENU</span>
           <button className={`sidebar-nav-btn ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')}>
-            ダッシュボード
+            <span className="sidebar-nav-icon">&#9632;</span> ダッシュボード
           </button>
           <button className={`sidebar-nav-btn ${view === 'editor' ? 'active' : ''}`} onClick={() => setView('editor')}>
-            編集
-          </button>
-          <button className={`sidebar-nav-btn ${view === 'library' ? 'active' : ''}`} onClick={() => setView('library')}>
-            ライブラリ
+            <span className="sidebar-nav-icon">&#9998;</span> エディタ
+            {canvas.length > 0 && <span className="sidebar-nav-count">{canvas.length}</span>}
           </button>
           <button className={`sidebar-nav-btn ${view === 'preview' ? 'active' : ''}`} onClick={() => setView('preview')}>
-            プレビュー
+            <span className="sidebar-nav-icon">&#9655;</span> プレビュー
           </button>
         </nav>
+
+        <nav className="sidebar-categories">
+          <span className="sidebar-nav-label">SEARCH BY PARTS</span>
+          <button
+            className={`sidebar-cat-btn ${view === 'library' && !selectedSite ? 'active' : ''}`}
+            onClick={() => { setView('library'); setSelectedSite(null) }}
+          >
+            <span className="sidebar-cat-icon">&#9733;</span>
+            <span className="sidebar-cat-name">すべて</span>
+            <span className="sidebar-cat-count">{sections.length}</span>
+          </button>
+          {Object.entries(familyCounts)
+            .sort((a, b) => b[1] - a[1])
+            .map(([family, count]) => (
+              <button
+                key={family}
+                className={`sidebar-cat-btn ${view === 'library' && selectedSite === family ? 'active' : ''}`}
+                onClick={() => { setView('library'); setSelectedSite(family) }}
+              >
+                <span className="sidebar-cat-icon" style={{ color: FAMILY_COLORS[family] || '#94a3b8' }}>
+                  {FAMILY_ICONS[family] || '●'}
+                </span>
+                <span className="sidebar-cat-name">{FAMILY_LABELS[family] || family}</span>
+                <span className="sidebar-cat-count">{count}</span>
+              </button>
+            ))}
+        </nav>
+
         <div className="sidebar-projects">
-          <span className="sidebar-nav-label">プロジェクト</span>
+          <span className="sidebar-nav-label">PROJECT</span>
           {projectList.map(p => (
             <button
               key={p.id}
@@ -522,10 +565,11 @@ export default function App() {
             </button>
           )}
         </div>
+
         <div className="sidebar-stats">
-          <div className="sidebar-stat">パーツ <strong>{sections.length}</strong></div>
-          <div className="sidebar-stat">サイト <strong>{sourceCount}</strong></div>
-          <div className="sidebar-stat">Canvas <strong>{canvas.length}</strong></div>
+          <div className="sidebar-stat"><span>{sourceCount}</span> サイト</div>
+          <div className="sidebar-stat"><span>{Object.keys(familyCounts).length}</span> 種別</div>
+          <div className="sidebar-stat"><span>{canvas.length}</span> Canvas</div>
         </div>
       </aside>
 
@@ -542,7 +586,7 @@ export default function App() {
 
       {view === 'preview' && <Preview items={canvasItems} onExportZip={handleExportZip} exporting={exporting} />}
 
-      {view === 'library' && <Library onAddToCanvas={addSavedToCanvas} />}
+      {view === 'library' && <Library onAddToCanvas={addSavedToCanvas} initialFamily={selectedSite} />}
 
       {tsxResult && (
         <TsxModal
