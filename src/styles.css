@@ -3762,3 +3762,145 @@ a.dash-link:hover {
 .save-toast-close:hover {
   color: var(--text);
 }
+
+/* ============================================================
+   Preview Project Bar & Project Gallery
+   ============================================================ */
+.preview-project-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 24px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+.preview-save-btn {
+  padding: 10px 24px;
+  background: var(--text);
+  color: var(--bg);
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.preview-save-btn:hover {
+  opacity: 0.85;
+}
+
+.preview-project-active {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.project-gallery {
+  padding: 24px;
+}
+
+.project-gallery-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0 0 16px;
+  color: var(--text);
+}
+
+.project-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.project-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.project-card:hover {
+  border-color: var(--text);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+.project-card.active {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--text);
+}
+
+.project-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.project-card-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.project-card-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--text);
+  color: var(--bg);
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.project-card-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.project-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.project-card-edit,
+.project-card-export,
+.project-card-delete {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  transition: all 0.15s;
+}
+
+.project-card-edit:hover {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.project-card-export {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+
+.project-card-export:hover {
+  background: #2563eb;
+  color: #fff;
+}
+
+.project-card-delete {
+  border-color: #ef4444;
+  color: #ef4444;
+  margin-left: auto;
+}
+
+.project-card-delete:hover {
+  background: #ef4444;
+  color: #fff;
+}

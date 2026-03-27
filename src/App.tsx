@@ -592,7 +592,63 @@ export default function App() {
         </div>
       )}
 
-      {view === 'preview' && <Preview items={canvasItems} onExportZip={handleExportZip} exporting={exporting} />}
+      {view === 'preview' && (
+        <>
+          <Preview items={canvasItems} onExportZip={handleExportZip} exporting={exporting} />
+          {canvasItems.length > 0 && (
+            <div className="preview-project-bar">
+              <button className="preview-save-btn" onClick={handleSaveProject}>
+                &#128190; プロジェクトとして保存
+              </button>
+              {activeProjectId && (
+                <span className="preview-project-active">
+                  編集中: {projectList.find(p => p.id === activeProjectId)?.name || ''}
+                </span>
+              )}
+            </div>
+          )}
+          {projectList.length > 0 && (
+            <div className="project-gallery">
+              <h3 className="project-gallery-title">保存済みプロジェクト</h3>
+              <div className="project-gallery-grid">
+                {projectList.map(p => (
+                  <div
+                    key={p.id}
+                    className={`project-card ${p.id === activeProjectId ? 'active' : ''}`}
+                    onClick={() => handleSwitchProject(p.id)}
+                  >
+                    <div className="project-card-header">
+                      <span className="project-card-name">{p.name}</span>
+                      {p.id === activeProjectId && <span className="project-card-badge">編集中</span>}
+                    </div>
+                    <div className="project-card-meta">
+                      {p.canvas_json?.length || 0} パーツ · {new Date(p.created_at).toLocaleDateString('ja-JP')}
+                    </div>
+                    <div className="project-card-actions">
+                      <button className="project-card-edit" onClick={(e) => { e.stopPropagation(); handleSwitchProject(p.id) }}>
+                        編集する
+                      </button>
+                      <button className="project-card-export" onClick={async (e) => {
+                        e.stopPropagation()
+                        if (!p.canvas_json?.length) return
+                        handleSwitchProject(p.id)
+                        setTimeout(() => handleExportZip(), 500)
+                      }}>
+                        ZIP出力
+                      </button>
+                      {p.id !== activeProjectId && (
+                        <button className="project-card-delete" onClick={(e) => { e.stopPropagation(); handleDeleteProject(p.id) }}>
+                          削除
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
 
       {view === 'library' && <Library onAddToCanvas={addSavedToCanvas} initialFamily={selectedSite} />}
 
