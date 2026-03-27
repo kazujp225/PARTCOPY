@@ -381,10 +381,8 @@ async function prepareSectionRender(sectionId: string): Promise<PreparedSectionR
   const scopeClass = createSectionScopeClass(sectionId)
   const cssBundle = await loadSectionCssBundle(record.page?.css_bundle_path)
 
-  // Filter CSS to only rules relevant to this section's HTML
-  const htmlTokens = extractHtmlTokens(html)
-  const filteredCss = filterCssForSection(cssBundle, htmlTokens)
-  const { scopedCss, fontFaceCss } = scopeCss(filteredCss, scopeClass)
+  // Use full CSS bundle with scoping (filtering removed - too aggressive for complex sites)
+  const { scopedCss, fontFaceCss } = scopeCss(cssBundle, scopeClass)
 
   return {
     sectionId,
@@ -2050,12 +2048,36 @@ app.post('/api/export/zip', async (req, res) => {
       return result
     }
 
+    // Collect section screenshots for reference
+    const sectionScreenshots: { name: string; buffer: Buffer }[] = []
+
     for (const prepared of preparedSections) {
       // Determine component name
       const componentBaseName = `${toPascalCase(prepared.blockFamily)}Section`
       const duplicateIndex = componentCounts.get(componentBaseName) || 0
       componentCounts.set(componentBaseName, duplicateIndex + 1)
       const componentName = duplicateIndex === 0 ? componentBaseName : `${componentBaseName}${duplicateIndex}`
+
+      // Load section screenshot for reference
+      let thumbnailPath: string | undefined
+      if (HAS_SUPABASE) {
+        const { data: secData } = await supabaseAdmin
+          .from('source_sections')
+          .select('thumbnail_storage_path')
+          .eq('id', prepared.sectionId)
+          .single()
+        thumbnailPath = secData?.thumbnail_storage_path ?? undefined
+      } else {
+        const secRecord = await getSection(prepared.sectionId)
+        thumbnailPath = secRecord?.thumbnail_storage_path ?? undefined
+      }
+      if (thumbnailPath) {
+        const thumbFile = await readBucketFile(STORAGE_BUCKETS.SECTION_THUMBNAILS, thumbnailPath)
+          || await readBucketFile(STORAGE_BUCKETS.RAW_HTML, thumbnailPath)
+        if (thumbFile) {
+          sectionScreenshots.push({ name: componentName, buffer: thumbFile.buffer })
+        }
+      }
 
       // Check if this section has Claude-converted TSX available
       let tsxStoragePath: string | undefined
@@ -2188,6 +2210,8 @@ ${guideImages || ' * （画像なし）'}
         '@types/react': '^18.3.12',
         '@types/react-dom': '^18.3.1',
         '@vitejs/plugin-react': '^4.3.4',
+        '@tailwindcss/vite': '^4.1.0',
+        tailwindcss: '^4.1.0',
         typescript: '^5.6.0',
         vite: '^6.0.0'
       }
@@ -2227,7 +2251,7 @@ ${guideImages || ' * （画像なし）'}
       include: ['src']
     }, null, 2)
 
-    const viteConfig = `import { defineConfig } from 'vite'\nimport react from '@vitejs/plugin-react'\n\nexport default defineConfig({\n  plugins: [react()],\n})\n`
+    const viteConfig = `import { defineConfig } from 'vite'\nimport react from '@vitejs/plugin-react'\nimport tailwindcss from '@tailwindcss/vite'\n\nexport default defineConfig({\n  plugins: [react(), tailwindcss()],\n})\n`
 
     // Extract design tokens from all component CSS
     const allComponentCss = components.map(c => c.cssFile || '').join('\n') + '\n' + globalFontFaceCss.join('\n')
@@ -2236,7 +2260,7 @@ ${guideImages || ' * （画像なし）'}
     const designTokensCss = generateDesignTokensCss(extractedColors, extractedFonts)
     const brandGuide = generateBrandGuide(extractedColors, extractedFonts)
 
-    const indexCss = `@import './design-tokens.css';\n\n${dedupeCssBlocks([PARTCOPY_BASE_CSS, ...globalFontFaceCss]).join('\n\n')}\n`
+    const indexCss = `@import 'tailwindcss';\n@import './design-tokens.css';\n\n${dedupeCssBlocks([PARTCOPY_BASE_CSS, ...globalFontFaceCss]).join('\n\n')}\n`
 
     // Generate setup.sh
     const setupSh = `#!/bin/bash
@@ -2336,8 +2360,19 @@ npm run build
 プロの実在サイトから「ヒーロー」「料金プラン」「FAQ」「フッター」など、
 デザインパーツを1つずつ選んで組み合わせた **React + TypeScript + Vite** のプロジェクトです。
 
-デザインはすでに完成しています。あなたの仕事は **中身（テキスト・画像・色など）を差し替えること** です。
-レイアウトや構造はできるだけそのまま活かしてください。
+## 最重要: reference-screenshots/ を必ず見てください
+
+\`reference-screenshots/\` フォルダに各セクションの**元サイトのスクリーンショット**が入っています。
+**これが正解の見た目**です。現在の \`src/components/\` のコードはHTMLの切り貼りなので見た目が崩れています。
+
+あなたの仕事は：
+1. **reference-screenshots/ のスクショを見て、その通りの見た目を再現する**
+2. 既存のHTML/CSSは参考データとして使い、**Tailwind CSS + React で書き直す**
+3. テキスト・画像パスは既存コードから引き継ぐ
+4. \`design-tokens.css\` のカラー変数を使ってブランドを統一する
+5. レスポンシブ対応する（Tailwindのブレークポイントを使用）
+
+元サイトの画像（ロゴ・写真等）は \`public/assets/\` に同梱されているのでそのまま使えます。
 
 ---
 
@@ -2567,6 +2602,11 @@ ${brandGuide}
 
     for (const asset of exportAssets) {
       archive.append(asset.buffer, { name: `public${asset.exportPath}`.replace(/^\//, '') })
+    }
+
+    // Add section screenshots as reference for Claude Code
+    for (const screenshot of sectionScreenshots) {
+      archive.append(screenshot.buffer, { name: `reference-screenshots/${screenshot.name}.png` })
     }
 
     // Add placeholder for missing assets
