@@ -1470,6 +1470,8 @@ app.delete('/api/library/:id', async (req, res) => {
       }
     }
     await deleteSectionRecord(req.params.id)
+    // Clean orphaned references from all projects' canvas_json
+    await cleanCanvasRefsForDeletedSection(req.params.id)
     res.json({ ok: true })
   } catch (err: any) {
     res.status(500).json({ error: safeErrorMessage(err) })
@@ -1665,6 +1667,46 @@ app.post('/api/sections/custom', async (req, res) => {
 })
 
 // ============================================================
+// Helper: Remove a sectionId from all projects' canvas_json
+// ============================================================
+async function cleanCanvasRefsForDeletedSection(deletedSectionId: string) {
+  try {
+    if (HAS_SUPABASE) {
+      const { data: projects } = await supabaseAdmin
+        .from('projects')
+        .select('id, canvas_json')
+      if (projects) {
+        for (const proj of projects) {
+          if (!Array.isArray(proj.canvas_json)) continue
+          const cleaned = proj.canvas_json.filter(
+            (block: any) => block.sectionId !== deletedSectionId
+          )
+          if (cleaned.length !== proj.canvas_json.length) {
+            await supabaseAdmin
+              .from('projects')
+              .update({ canvas_json: cleaned })
+              .eq('id', proj.id)
+          }
+        }
+      }
+    } else {
+      const projects = await listProjects()
+      for (const proj of projects) {
+        if (!Array.isArray(proj.canvas_json)) continue
+        const cleaned = proj.canvas_json.filter(
+          (block: any) => block.sectionId !== deletedSectionId
+        )
+        if (cleaned.length !== proj.canvas_json.length) {
+          await updateLocalProject(proj.id, { canvas_json: cleaned })
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn('Failed to clean canvas refs for deleted section', { sectionId: deletedSectionId, error: (err as Error).message })
+  }
+}
+
+// ============================================================
 // Section: Delete
 // ============================================================
 app.delete('/api/sections/:sectionId', async (req, res) => {
@@ -1683,6 +1725,8 @@ app.delete('/api/sections/:sectionId', async (req, res) => {
       }
     }
     await deleteSectionRecord(sectionId)
+    // Clean orphaned references from all projects' canvas_json
+    await cleanCanvasRefsForDeletedSection(sectionId)
     res.json({ ok: true })
   } catch (err: any) {
     res.status(500).json({ error: safeErrorMessage(err) })
@@ -3036,6 +3080,74 @@ app.put('/api/projects/:id', async (req, res) => {
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message })
+  }
+})
+
+// ============================================================
+// Project cleanup: remove orphaned sectionIds from canvas_json
+// ============================================================
+app.post('/api/projects/:id/cleanup', async (req, res) => {
+  try {
+    let project: any
+    if (HAS_SUPABASE) {
+      const { data, error } = await supabaseAdmin
+        .from('projects')
+        .select('id, canvas_json')
+        .eq('id', req.params.id)
+        .single()
+      if (error) throw new Error(error.message)
+      project = data
+    } else {
+      const projects = await listProjects()
+      project = projects.find((p: any) => p.id === req.params.id)
+    }
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return }
+
+    const canvasJson: any[] = Array.isArray(project.canvas_json) ? project.canvas_json : []
+    if (canvasJson.length === 0) {
+      res.json({ project, removed: 0 })
+      return
+    }
+
+    // Check which sectionIds actually exist
+    const sectionIds = [...new Set(canvasJson.map((b: any) => b.sectionId))]
+    const existingIds = new Set<string>()
+
+    if (HAS_SUPABASE) {
+      const { data: rows } = await supabaseAdmin
+        .from('source_sections')
+        .select('id')
+        .in('id', sectionIds)
+      if (rows) rows.forEach((r: any) => existingIds.add(r.id))
+    } else {
+      for (const sid of sectionIds) {
+        const sec = await getSection(sid)
+        if (sec) existingIds.add(sid)
+      }
+    }
+
+    const cleaned = canvasJson.filter((b: any) => existingIds.has(b.sectionId))
+    const removedCount = canvasJson.length - cleaned.length
+
+    if (removedCount > 0) {
+      if (HAS_SUPABASE) {
+        const { data, error } = await supabaseAdmin
+          .from('projects')
+          .update({ canvas_json: cleaned })
+          .eq('id', req.params.id)
+          .select()
+          .single()
+        if (error) throw new Error(error.message)
+        res.json({ project: data, removed: removedCount })
+      } else {
+        const updated = await updateLocalProject(req.params.id, { canvas_json: cleaned })
+        res.json({ project: updated, removed: removedCount })
+      }
+    } else {
+      res.json({ project, removed: 0 })
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 

@@ -32,8 +32,6 @@ export function PartsPanel({ sections, onAdd, onRemove, onViewTsx }: Props) {
   const normalizedQuery = query.trim().toLowerCase()
   const filtered = useMemo(() => sections
     .filter(section => {
-      // htmlUrlがないセクションは非表示
-      if (!section.htmlUrl) return false
       if (filter !== 'all' && section.block_family !== filter) return false
       if (onlyCta && !section.features_jsonb?.hasCTA) return false
       if (onlyForm && !section.features_jsonb?.hasForm) return false

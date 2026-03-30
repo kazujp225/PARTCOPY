@@ -138,6 +138,7 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
                   if (e.key === 'Delete' || e.key === 'Backspace') {
                     if (editingIndex === null && document.activeElement === e.currentTarget) {
                       e.preventDefault()
+                      if (!confirm('このブロックを削除しますか？')) return
                       onRemove(item.canvas.id)
                     }
                   }
@@ -175,7 +176,7 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
                     >
                       {editingIndex === i ? '閉じる' : '編集'}
                     </button>
-                    <button className="canvas-remove-btn" onClick={() => onRemove(item.canvas.id)} aria-label="ブロックを削除">&times;</button>
+                    <button className="canvas-remove-btn" onClick={() => { if (!confirm('このブロックを削除しますか？')) return; onRemove(item.canvas.id) }} aria-label="ブロックを削除">&times;</button>
                   </div>
                 </div>
                 <div className="canvas-block-preview">

@@ -15,6 +15,7 @@ export function CodeEditor({ sectionId, onClose, onSaved }: Props) {
   const [original, setOriginal] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [dirty, setDirty] = useState(false)
   const [previewKey, setPreviewKey] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -46,7 +47,10 @@ export function CodeEditor({ sectionId, onClose, onSaved }: Props) {
         setOriginal(data.html || '')
         setLoading(false)
       })
-      .catch(() => setLoading(false))
+      .catch((err: any) => {
+        setLoading(false)
+        setSaveMessage({ type: 'error', text: err?.message || 'HTMLの読み込みに失敗しました' })
+      })
   }, [sectionId])
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -56,18 +60,24 @@ export function CodeEditor({ sectionId, onClose, onSaved }: Props) {
 
   const handleSave = useCallback(async () => {
     setSaving(true)
+    setSaveMessage(null)
     try {
       const res = await fetch(`/api/sections/${sectionId}/html`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ html })
       })
-      if (res.ok) {
-        setOriginal(html)
-        setDirty(false)
-        setPreviewKey(k => k + 1)
-        onSaved()
+      if (!res.ok) {
+        throw new Error(`保存に失敗しました (${res.status})`)
       }
+      setOriginal(html)
+      setDirty(false)
+      setPreviewKey(k => k + 1)
+      onSaved()
+      setSaveMessage({ type: 'success', text: '保存しました' })
+      setTimeout(() => setSaveMessage(null), 3000)
+    } catch (err: any) {
+      setSaveMessage({ type: 'error', text: err?.message || '保存に失敗しました' })
     } finally {
       setSaving(false)
     }
@@ -117,6 +127,11 @@ export function CodeEditor({ sectionId, onClose, onSaved }: Props) {
           <div className="code-editor-title">
             HTML 編集
             {dirty && <span className="code-editor-dirty">*未保存</span>}
+            {saveMessage && (
+              <span className={`code-editor-save-msg code-editor-save-msg--${saveMessage.type}`}>
+                {saveMessage.text}
+              </span>
+            )}
           </div>
           <div className="code-editor-actions">
             <button

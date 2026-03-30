@@ -2743,6 +2743,14 @@ body {
   animation: terminal-type 0.5s ease forwards;
 }
 
+.terminal-done-sub {
+  margin-top: 6px;
+  padding: 6px 12px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
 .terminal-footer {
   padding: 16px 20px;
   border-top: 1px solid #21262d;
@@ -3934,6 +3942,21 @@ a.dash-link:hover {
   color: var(--text);
 }
 
+.save-error-toast {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  background: #dc2626;
+  color: #fff;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
 /* ============================================================
    Preview Project Bar & Project Gallery
    ============================================================ */
@@ -4297,4 +4320,61 @@ a.dash-link:hover {
 .project-part-domain {
   font-size: 11px;
   color: var(--text-muted);
+}
+
+/* ============================================================
+   Save Status Indicator (sidebar)
+   ============================================================ */
+.save-status {
+  padding: 8px 16px;
+  font-size: 11px;
+  text-align: center;
+  border-top: 1px solid var(--border);
+  transition: color 0.2s, background 0.2s;
+}
+
+.save-status--idle {
+  color: var(--text-muted);
+}
+
+.save-status--saving {
+  color: var(--primary);
+  animation: save-pulse 1s ease-in-out infinite;
+}
+
+.save-status--saved {
+  color: var(--success);
+}
+
+.save-status--error {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+@keyframes save-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ============================================================
+   CodeEditor Save Message
+   ============================================================ */
+.code-editor-save-msg {
+  margin-left: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  animation: save-msg-fade-in 0.2s ease;
+}
+
+.code-editor-save-msg--success {
+  color: var(--success);
+}
+
+.code-editor-save-msg--error {
+  color: var(--danger);
+}
+
+@keyframes save-msg-fade-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
 }

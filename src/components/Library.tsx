@@ -228,6 +228,13 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
           {!loading && error && (
             <div className="library-empty">
               <p>{error}</p>
+              <button
+                className="inline-reset-btn"
+                style={{ marginTop: 8 }}
+                onClick={() => fetchSections()}
+              >
+                再試行
+              </button>
             </div>
           )}
           {!loading && !error && sections.length === 0 && (

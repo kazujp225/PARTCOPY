@@ -14,6 +14,8 @@ import './styles.css'
 type View = 'dashboard' | 'editor' | 'preview' | 'library' | 'project-detail'
 
 const CANVAS_STORAGE_KEY = 'partcopy:canvas'
+const ACTIVE_PROJECT_KEY = 'partcopy:activeProjectId'
+const ACTIVE_VIEW_KEY = 'partcopy:view'
 const CANVAS_STORAGE_VERSION = 1
 function loadCanvasFromStorage(): CanvasBlock[] {
   try {
@@ -24,6 +26,14 @@ function loadCanvasFromStorage(): CanvasBlock[] {
     return Array.isArray(parsed.canvas) ? parsed.canvas : []
   } catch { return [] }
 }
+function loadActiveProjectId(): string | null {
+  return localStorage.getItem(ACTIVE_PROJECT_KEY) || null
+}
+function loadActiveView(): View {
+  const v = localStorage.getItem(ACTIVE_VIEW_KEY)
+  if (v && ['dashboard','editor','preview','library','project-detail'].includes(v)) return v as View
+  return 'dashboard'
+}
 
 export default function App() {
   const [sections, setSections] = useState<SourceSection[]>([])
@@ -31,14 +41,14 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<string | null>(null)
-  const [view, setView] = useState<View>('dashboard')
+  const [view, setViewState] = useState<View>(loadActiveView)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const [tsxResult, setTsxResult] = useState<{ tsx: string; familyName?: string } | null>(null)
   const [exporting, setExporting] = useState(false)
   const [includeImages, setIncludeImages] = useState(true)
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
   const [projectList, setProjectList] = useState<Array<{id: string; name: string; canvas_json: any[]; created_at: string}>>([])
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
+  const [activeProjectId, setActiveProjectIdState] = useState<string | null>(loadActiveProjectId)
 
   // Auto-crawl state
   const [crawlQueueCount, setCrawlQueueCount] = useState(0)
@@ -56,26 +66,97 @@ export default function App() {
   const [newProjectName, setNewProjectName] = useState('')
   const [showNewProject, setShowNewProject] = useState(false)
   const [saveToast, setSaveToast] = useState<{ projectId: string; projectName: string } | null>(null)
+  const [lastCrawlSections, setLastCrawlSections] = useState<SourceSection[]>([])
+  const [lastCrawlNewCount, setLastCrawlNewCount] = useState(0)
+
+  const [saveError, setSaveError] = useState<string | null>(null)
+
+  // Save status indicator
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
+
+  // activeProjectIdとviewをlocalStorageに永続化するラッパー
+  const setActiveProjectId = useCallback((id: string | null) => {
+    setActiveProjectIdState(id)
+    if (id) localStorage.setItem(ACTIVE_PROJECT_KEY, id)
+    else localStorage.removeItem(ACTIVE_PROJECT_KEY)
+  }, [])
+  const setView = useCallback((v: View) => {
+    setViewState(v)
+    localStorage.setItem(ACTIVE_VIEW_KEY, v)
+  }, [])
+
+  // 初回ロード時にSupabaseからcanvas復元するまで自動保存を抑止
+  const initializedRef = useRef(false)
 
   // Persist canvas to localStorage + Supabase project (debounced)
   useEffect(() => {
+    if (!initializedRef.current) return // 初回ロード中は保存しない
     const timer = setTimeout(() => {
       localStorage.setItem(CANVAS_STORAGE_KEY, JSON.stringify({ version: CANVAS_STORAGE_VERSION, canvas }))
       // プロジェクトが選択されていれば自動保存
       if (activeProjectId) {
+        setSaveStatus('saving')
         fetch(`/api/projects/${activeProjectId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ canvas_json: canvas })
-        }).catch(() => {})
+        })
+          .then(r => {
+            if (!r.ok) throw new Error(`保存失敗: ${r.status}`)
+            setSaveError(null)
+            setSaveStatus('saved')
+            setLastSavedAt(new Date())
+          })
+          .catch(err => {
+            setSaveError(err.message)
+            setSaveStatus('error')
+          })
       }
     }, 500)
     return () => clearTimeout(timer)
   }, [canvas])
 
-  // Load projects on mount
+  // Warn before closing if there are unsaved changes
   useEffect(() => {
-    fetch('/api/projects').then(r => r.json()).then(d => setProjectList(d.projects || [])).catch(() => {})
+    const handler = (e: BeforeUnloadEvent) => {
+      if (saveStatus === 'saving') {
+        e.preventDefault()
+        e.returnValue = ''
+      }
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [saveStatus])
+
+  // canvas_json内のsectionIdが実際にsectionsに存在するもののみカウントするヘルパー
+  const resolvedPartCount = useCallback((canvasJson: any[]) => {
+    if (!canvasJson?.length) return 0
+    return canvasJson.filter((b: any) => sections.some(s => s.id === b.sectionId)).length
+  }, [sections])
+
+  // Load projects on mount & restore active project canvas from Supabase
+  useEffect(() => {
+    fetch('/api/projects')
+      .then(r => r.json())
+      .then(d => {
+        const projects = d.projects || []
+        setProjectList(projects)
+        // アクティブプロジェクトがあればSupabaseのcanvas_jsonで復元（localStorageより信頼性が高い）
+        if (activeProjectId) {
+          const active = projects.find((p: any) => p.id === activeProjectId)
+          if (active && Array.isArray(active.canvas_json)) {
+            setCanvas(active.canvas_json)
+          }
+        }
+        // 初期ロード完了 → 自動保存を有効化
+        initializedRef.current = true
+      })
+      .catch((err: any) => {
+        setSaveError(err?.message || 'プロジェクトの読み込みに失敗しました')
+        // 初期ロードが失敗しても自動保存は有効化（localStorageのデータで動作可能）
+        initializedRef.current = true
+      })
   }, [])
 
   // Load all sections from library on mount
@@ -96,8 +177,34 @@ export default function App() {
           return next
         })
       })
-      .catch(() => {})
+      .catch((err: any) => { setSaveError(err?.message || 'ライブラリの読み込みに失敗しました') })
   }, [])
+
+  // Validate canvas on load: remove blocks whose sectionId no longer exists
+  const canvasCleanedRef = useRef(false)
+  useEffect(() => {
+    if (!initializedRef.current || canvasCleanedRef.current) return
+    if (sections.length === 0 || canvas.length === 0) return
+    const sectionIdSet = new Set(sections.map(s => s.id))
+    const cleaned = canvas.filter(b => sectionIdSet.has(b.sectionId))
+    if (cleaned.length < canvas.length) {
+      const removedCount = canvas.length - cleaned.length
+      console.warn(`[PARTCOPY] Removed ${removedCount} orphaned canvas block(s) on load`)
+      setCanvas(cleaned)
+      // Auto-save cleaned canvas back to server
+      if (activeProjectId) {
+        fetch(`/api/projects/${activeProjectId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ canvas_json: cleaned })
+        }).catch((err: any) => {
+          setSaveError(err?.message || 'クリーンアップ後の自動保存に失敗しました')
+        })
+      }
+    }
+    canvasCleanedRef.current = true
+  }, [sections, canvas])
+
   // Cycle crawl steps 1→2→3→4 every 8 seconds while active
   useEffect(() => {
     if (!crawlActive) { setCrawlStep(1); return }
@@ -151,7 +258,9 @@ export default function App() {
         setCrawlActive(data.active || false)
         setCrawlUrls('')
       }
-    } catch {}
+    } catch (err: any) {
+      setSaveError(err?.message || 'クロールキューへの追加に失敗しました')
+    }
     setCrawlSubmitting(false)
   }, [crawlUrls])
 
@@ -161,7 +270,9 @@ export default function App() {
       if (res.ok) {
         setCrawlQueueCount(0)
       }
-    } catch {}
+    } catch (err: any) {
+      setSaveError(err?.message || 'クロールキューのクリアに失敗しました')
+    }
   }, [])
 
   const handleKeywordSearch = useCallback(async () => {
@@ -181,7 +292,9 @@ export default function App() {
         // デフォルトで全選択
         setSelectedUrls(new Set(data.urls))
       }
-    } catch {}
+    } catch (err: any) {
+      setSaveError(err?.message || 'キーワード検索に失敗しました')
+    }
     setKeywordSearching(false)
   }, [keywordSearch])
 
@@ -200,7 +313,9 @@ export default function App() {
         setKeywordResult(null)
         setSelectedUrls(new Set())
       }
-    } catch {}
+    } catch (err: any) {
+      setSaveError(err?.message || 'キューへの追加に失敗しました')
+    }
   }, [selectedUrls])
 
   const sourceCount = new Set(
@@ -230,10 +345,32 @@ export default function App() {
 
   const pollJob = useCallback((jobId: string) => {
     stopPolling()
+    let pollCount = 0
+    let consecutiveFailures = 0
+    const MAX_POLL_COUNT = 150 // 5 minutes at 2s interval
+    const MAX_CONSECUTIVE_FAILURES = 5
     pollRef.current = setInterval(async () => {
+      pollCount++
+      if (pollCount > MAX_POLL_COUNT) {
+        stopPolling()
+        setError('ジョブがタイムアウトしました。リトライしてください')
+        setLoading(false)
+        setJobStatus(null)
+        return
+      }
       try {
         const res = await fetch(`/api/jobs/${jobId}`)
-        if (!res.ok) return // skip transient errors, will retry next interval
+        if (!res.ok) {
+          consecutiveFailures++
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            stopPolling()
+            setError('サーバーとの通信に連続して失敗しました。リトライしてください')
+            setLoading(false)
+            setJobStatus(null)
+          }
+          return
+        }
+        consecutiveFailures = 0
         const { job } = await res.json() as { job: CrawlJob }
         if (!job) return
         const detail = job.status_detail || ''
@@ -246,14 +383,18 @@ export default function App() {
           if (!secRes.ok) { setLoading(false); setJobStatus(null); return }
           const secData = await secRes.json()
           const secs = secData.sections || []
+          setLastCrawlSections(secs)
           setSections(prev => {
             const seen = new Set(prev.map(section => section.id))
             const next = [...prev]
+            let newCount = 0
             for (const section of secs) {
               if (seen.has(section.id)) continue
               seen.add(section.id)
               next.push(section)
+              newCount++
             }
+            setLastCrawlNewCount(newCount)
             return next
           })
           // loadingは維持（ターミナル画面で「抽出結果を見る」ボタンを表示）
@@ -266,7 +407,13 @@ export default function App() {
           setJobStatus(null)
         }
       } catch {
-        // Ignore transient fetch errors
+        consecutiveFailures++
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          stopPolling()
+          setError('サーバーとの通信に連続して失敗しました。リトライしてください')
+          setLoading(false)
+          setJobStatus(null)
+        }
       }
     }, 2000)
   }, [])
@@ -275,6 +422,8 @@ export default function App() {
     setLoading(true)
     setError(null)
     setJobStatus('準備中...')
+    setLastCrawlSections([])
+    setLastCrawlNewCount(0)
     try {
       const res = await fetch('/api/extract', {
         method: 'POST',
@@ -335,7 +484,9 @@ export default function App() {
   const removeSection = useCallback(async (sectionId: string) => {
     try {
       await fetch(`/api/sections/${sectionId}`, { method: 'DELETE' })
-    } catch {}
+    } catch (err: any) {
+      setSaveError(err?.message || 'セクションの削除に失敗しました')
+    }
     setSections(prev => prev.filter(s => s.id !== sectionId))
     setCanvas(prev => prev.filter(c => c.sectionId !== sectionId))
   }, [])
@@ -362,7 +513,29 @@ export default function App() {
     if (canvas.length === 0) return
     setExporting(true)
     try {
-      const sectionIds = canvas.map(c => c.sectionId)
+      // Pre-check: filter canvas to only include blocks with existing sections
+      const sectionIdSet = new Set(sections.map(s => s.id))
+      const validBlocks = canvas.filter(b => sectionIdSet.has(b.sectionId))
+      const orphanedCount = canvas.length - validBlocks.length
+      if (orphanedCount > 0) {
+        alert(`${orphanedCount}件の無効なパーツ参照を除外してエクスポートします`)
+        // Auto-clean canvas state
+        setCanvas(validBlocks)
+        if (activeProjectId) {
+          fetch(`/api/projects/${activeProjectId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ canvas_json: validBlocks })
+          }).catch((err: any) => {
+            setSaveError(err?.message || 'Canvasのクリーンアップ保存に失敗しました')
+          })
+        }
+      }
+      if (validBlocks.length === 0) {
+        alert('エクスポートできるパーツがありません')
+        return
+      }
+      const sectionIds = validBlocks.map(c => c.sectionId)
       const res = await fetch('/api/export/zip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -381,36 +554,61 @@ export default function App() {
     } finally {
       setExporting(false)
     }
-  }, [canvas, includeImages])
+  }, [canvas, sections, includeImages, activeProjectId])
 
   const handleNewProject = async (name: string) => {
     try {
       const res = await fetch('/api/projects', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name}) })
-      if (res.ok) {
-        const { project } = await res.json()
-        setProjectList(prev => [project, ...prev])
-        // Save current canvas to old project before switching
-        if (activeProjectId) {
-          await fetch(`/api/projects/${activeProjectId}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({canvas_json: canvas}) })
-        }
-        setActiveProjectId(project.id)
-        setCanvas([])
-        setView('editor')
+      if (!res.ok) throw new Error(`プロジェクト作成に失敗しました (${res.status})`)
+      const { project } = await res.json()
+      setProjectList(prev => [project, ...prev])
+      // Save current canvas to old project before switching
+      if (activeProjectId) {
+        await fetch(`/api/projects/${activeProjectId}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({canvas_json: canvas}) })
       }
-    } catch {}
+      setActiveProjectId(project.id)
+      setCanvas([])
+      setView('editor')
+    } catch (err: any) {
+      setSaveError(err?.message || 'プロジェクトの作成に失敗しました')
+    }
   }
 
   const handleSwitchProject = async (projectId: string) => {
     // Save current project's canvas before switching
     if (activeProjectId) {
-      await fetch(`/api/projects/${activeProjectId}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({canvas_json: canvas}) }).catch(() => {})
+      try {
+        const r = await fetch(`/api/projects/${activeProjectId}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({canvas_json: canvas}) })
+        if (!r.ok) throw new Error(`保存失敗: ${r.status}`)
+      } catch (err: any) {
+        setSaveError(err?.message || '現在のプロジェクトの保存に失敗しました')
+        return // Save failed — do NOT proceed with switch
+      }
       setProjectList(prev => prev.map(p =>
         p.id === activeProjectId ? { ...p, canvas_json: canvas } : p
       ))
     }
     const target = projectList.find(p => p.id === projectId)
     if (target) {
-      setCanvas(target.canvas_json || [])
+      const rawCanvas: CanvasBlock[] = target.canvas_json || []
+      // Filter out orphaned sectionIds that no longer exist
+      const sectionIdSet = new Set(sections.map(s => s.id))
+      const validCanvas = rawCanvas.filter(b => sectionIdSet.has(b.sectionId))
+      if (validCanvas.length < rawCanvas.length) {
+        console.warn(`[PARTCOPY] Removed ${rawCanvas.length - validCanvas.length} orphaned block(s) on project switch`)
+        // Auto-save cleaned canvas
+        fetch(`/api/projects/${projectId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ canvas_json: validCanvas })
+        }).catch((err: any) => {
+          setSaveError(err?.message || 'クリーンアップ後の保存に失敗しました')
+        })
+        setProjectList(prev => prev.map(p =>
+          p.id === projectId ? { ...p, canvas_json: validCanvas } : p
+        ))
+      }
+      setCanvas(validCanvas)
       setActiveProjectId(projectId)
       setView('editor')
     }
@@ -436,27 +634,41 @@ export default function App() {
         setActiveProjectId(project.id)
         projectId = project.id
         projectName = project.name
-      } catch { return }
+      } catch (err: any) {
+        setSaveError(err?.message || 'プロジェクトの作成に失敗しました')
+        return
+      }
     }
 
-    await fetch(`/api/projects/${projectId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ canvas_json: canvas })
-    }).catch(() => {})
+    try {
+      const saveRes = await fetch(`/api/projects/${projectId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ canvas_json: canvas })
+      })
+      if (!saveRes.ok) throw new Error(`保存に失敗しました (${saveRes.status})`)
 
-    // ローカルのprojectListも更新（パーツ数が反映されるように）
-    setProjectList(prev => prev.map(p =>
-      p.id === projectId ? { ...p, canvas_json: canvas } : p
-    ))
+      // ローカルのprojectListも更新（パーツ数が反映されるように）
+      setProjectList(prev => prev.map(p =>
+        p.id === projectId ? { ...p, canvas_json: canvas } : p
+      ))
 
-    // トースト通知を表示
-    setSaveToast({ projectId: projectId!, projectName })
-    setTimeout(() => setSaveToast(null), 5000)
+      // トースト通知を表示
+      setSaveToast({ projectId: projectId!, projectName })
+      setTimeout(() => setSaveToast(null), 5000)
+    } catch (err: any) {
+      setSaveError(err.message || '保存に失敗しました')
+    }
   }
 
   const handleDeleteProject = async (projectId: string) => {
-    await fetch(`/api/projects/${projectId}`, { method: 'DELETE' }).catch(() => {})
+    if (!confirm('プロジェクトを削除しますか？')) return
+    try {
+      await fetch(`/api/projects/${projectId}`, { method: 'DELETE' })
+    } catch (err: any) {
+      setSaveError(err?.message || 'プロジェクトの削除に失敗しました')
+      return
+    }
     setProjectList(prev => prev.filter(p => p.id !== projectId))
     if (activeProjectId === projectId) {
       setActiveProjectId(null)
@@ -476,6 +688,11 @@ export default function App() {
   return (
     <div className="app">
       <ErrorBoundary>
+      {saveError && (
+        <div className="save-error-toast" onClick={() => setSaveError(null)}>
+          保存エラー: {saveError}
+        </div>
+      )}
       <aside className="sidebar">
         <div className="sidebar-logo">
           <h1>PARTCOPY</h1>
@@ -510,7 +727,7 @@ export default function App() {
               onClick={() => { setActiveProjectId(p.id); setCanvas(p.canvas_json || []); setView('project-detail') }}
             >
               <span className="sidebar-saved-name">{p.name}</span>
-              <span className="sidebar-saved-meta">{p.canvas_json?.length || 0}パーツ</span>
+              <span className="sidebar-saved-meta">{resolvedPartCount(p.canvas_json)}パーツ</span>
             </button>
           ))}
           {canvasItems.length > 0 && (
@@ -561,7 +778,7 @@ export default function App() {
               <div className="sidebar-project-info">
                 <span className="sidebar-project-name">{p.name}</span>
                 <span className="sidebar-project-meta">
-                  {p.canvas_json?.length || 0} パーツ
+                  {resolvedPartCount(p.canvas_json)} パーツ
                   {p.id === activeProjectId && ' · 編集中'}
                 </span>
               </div>
@@ -610,6 +827,15 @@ export default function App() {
           <div className="sidebar-stat"><span>{Object.keys(familyCounts).length}</span> 種別</div>
           <div className="sidebar-stat"><span>{canvas.length}</span> Canvas</div>
         </div>
+
+        {activeProjectId && (
+          <div className={`save-status save-status--${saveStatus}`}>
+            {saveStatus === 'saving' && '保存中...'}
+            {saveStatus === 'saved' && lastSavedAt && `保存済み ${lastSavedAt.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}`}
+            {saveStatus === 'error' && '保存エラー'}
+            {saveStatus === 'idle' && ''}
+          </div>
+        )}
       </aside>
 
       <main className="main-content">
@@ -656,8 +882,10 @@ export default function App() {
                   {projectSections.map((item, i) => (
                     <div key={item.canvas.id || i} className="project-part-card">
                       <div className="project-part-thumb">
-                        {item.section.thumbnailUrl ? (
-                          <img src={item.section.thumbnailUrl} alt={item.section.block_family} />
+                        {item.section.thumbnail_storage_path ? (
+                          <img src={`/assets/${item.section.thumbnail_storage_path}`} alt={item.section.block_family} loading="lazy" />
+                        ) : item.section.thumbnailUrl ? (
+                          <img src={item.section.thumbnailUrl} alt={item.section.block_family} loading="lazy" />
                         ) : (
                           <div className="project-part-placeholder">{i + 1}</div>
                         )}
@@ -712,7 +940,7 @@ export default function App() {
                       {p.id === activeProjectId && <span className="project-card-badge">編集中</span>}
                     </div>
                     <div className="project-card-meta">
-                      {p.canvas_json?.length || 0} パーツ · {new Date(p.created_at).toLocaleDateString('ja-JP')}
+                      {resolvedPartCount(p.canvas_json)} パーツ · {new Date(p.created_at).toLocaleDateString('ja-JP')}
                     </div>
                     <div className="project-card-actions">
                       <button className="project-card-edit" onClick={(e) => { e.stopPropagation(); handleSwitchProject(p.id) }}>
@@ -807,10 +1035,13 @@ export default function App() {
               {!jobStatus && sections.length > 0 && (
                 <>
                   <div className="terminal-done">
-                    <span>✓ 抽出完了 — {sections.length} パーツ取得</span>
+                    <span>✓ 抽出完了 — 今回 {lastCrawlSections.length} パーツ取得（新規 {lastCrawlNewCount} 件）</span>
+                  </div>
+                  <div className="terminal-done-sub">
+                    <span>ライブラリ合計: {sections.length} パーツ</span>
                   </div>
                   <div className="terminal-results">
-                    {sections.slice(-10).map((s, i) => (
+                    {(lastCrawlSections.length > 0 ? lastCrawlSections.slice(-10) : sections.slice(-10)).map((s, i) => (
                       <div key={s.id} className="terminal-result-line" style={{ animationDelay: `${i * 0.15}s` }}>
                         <span className="terminal-prompt">→</span>
                         <span className="result-family">[{s.block_family}]</span>
