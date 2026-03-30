@@ -1021,9 +1021,11 @@ async function getDefaultVariantRecord() {
 // ============================================================
 // Clean asset serving: /assets/{siteId}/{jobId}/...
 // ============================================================
-app.get('/assets/:siteId/:jobId/*', async (req, res) => {
+app.get('/assets/:siteId/:jobId/*filePath', async (req, res) => {
   const { siteId, jobId } = req.params
-  const filePath = (req.params as Record<string, string>)[0]
+  const filePath = Array.isArray(req.params.filePath)
+    ? req.params.filePath.join('/')
+    : req.params.filePath
   const storagePath = `${siteId}/${jobId}/${filePath}`
 
   // Determine content type from extension
@@ -1934,7 +1936,7 @@ app.get('/api/sections/:sectionId/tsx', async (req, res) => {
 // ZIP Export - combine canvas sections into a downloadable project
 // ============================================================
 app.post('/api/export/zip', async (req, res) => {
-  const { sectionIds } = req.body as { sectionIds: string[] }
+  const { sectionIds, includeImages = true } = req.body as { sectionIds: string[]; includeImages?: boolean }
 
   if (!sectionIds || !Array.isArray(sectionIds) || sectionIds.length === 0) {
     res.status(400).json({ error: 'sectionIds array required' })
@@ -1964,15 +1966,29 @@ app.post('/api/export/zip', async (req, res) => {
       return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     }
 
+    const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|avif|svg|ico|mp4|webm)(\?[^'"]*)?$/i
+
     const ensureExportAsset = async (sourceUrl: string) => {
       if (exportAssetPathBySource.has(sourceUrl)) {
         return exportAssetPathBySource.get(sourceUrl)
+      }
+
+      // Skip image assets when includeImages is false
+      if (!includeImages && IMAGE_EXT_RE.test(sourceUrl)) {
+        exportAssetPathBySource.set(sourceUrl, '/assets/placeholder.svg')
+        return '/assets/placeholder.svg'
       }
 
       const resolvedAsset = await loadExportAssetSource(sourceUrl)
       if (!resolvedAsset) {
         failedAssetUrls.add(sourceUrl)
         return undefined
+      }
+
+      // Also check content-type for image assets when includeImages is false
+      if (!includeImages && resolvedAsset.contentType?.startsWith('image/')) {
+        exportAssetPathBySource.set(sourceUrl, '/assets/placeholder.svg')
+        return '/assets/placeholder.svg'
       }
 
       let exportPath = exportAssetPathByKey.get(resolvedAsset.key)
@@ -2609,8 +2625,8 @@ ${brandGuide}
       archive.append(screenshot.buffer, { name: `reference-screenshots/${screenshot.name}.png` })
     }
 
-    // Add placeholder for missing assets
-    if (failedAssetUrls.size > 0) {
+    // Add placeholder for missing assets or when images are excluded
+    if (failedAssetUrls.size > 0 || !includeImages) {
       const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300"><rect width="400" height="300" fill="#f0f0f0"/><text x="200" y="150" text-anchor="middle" fill="#999" font-family="sans-serif" font-size="14">Image not available</text></svg>`
       archive.append(placeholderSvg, { name: 'public/assets/placeholder.svg' })
     }

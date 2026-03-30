@@ -1304,6 +1304,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .canvas-header h2 {
@@ -1316,6 +1318,7 @@ body {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .canvas-blocks {
@@ -2415,6 +2418,32 @@ body {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.5px;
+}
+
+.zip-export-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface, #1a1a2e);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 4px 4px 10px;
+}
+.include-images-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+.include-images-toggle input[type="checkbox"] {
+  accent-color: var(--primary);
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
 }
 
 .zip-btn {

@@ -35,6 +35,7 @@ export default function App() {
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const [tsxResult, setTsxResult] = useState<{ tsx: string; familyName?: string } | null>(null)
   const [exporting, setExporting] = useState(false)
+  const [includeImages, setIncludeImages] = useState(true)
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
   const [projectList, setProjectList] = useState<Array<{id: string; name: string; canvas_json: any[]; created_at: string}>>([])
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
@@ -365,7 +366,7 @@ export default function App() {
       const res = await fetch('/api/export/zip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sectionIds })
+        body: JSON.stringify({ sectionIds, includeImages })
       })
       if (!res.ok) throw new Error('ZIP出力に失敗しました')
       const blob = await res.blob()
@@ -380,7 +381,7 @@ export default function App() {
     } finally {
       setExporting(false)
     }
-  }, [canvas])
+  }, [canvas, includeImages])
 
   const handleNewProject = async (name: string) => {
     try {
@@ -677,13 +678,13 @@ export default function App() {
       {view === 'editor' && (
         <div className="editor-layout">
           <PartsPanel sections={filteredSections} onAdd={addToCanvas} onRemove={removeSection} onViewTsx={handleViewTsx} />
-          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onExportZip={handleExportZip} exporting={exporting} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} />
+          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onExportZip={handleExportZip} exporting={exporting} includeImages={includeImages} onToggleIncludeImages={setIncludeImages} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} />
         </div>
       )}
 
       {view === 'preview' && (
         <>
-          <Preview items={canvasItems} onExportZip={handleExportZip} exporting={exporting} />
+          <Preview items={canvasItems} onExportZip={handleExportZip} exporting={exporting} includeImages={includeImages} onToggleIncludeImages={setIncludeImages} />
           {canvasItems.length > 0 && (
             <div className="preview-project-bar">
               <button className="preview-save-btn" onClick={handleSaveProject}>

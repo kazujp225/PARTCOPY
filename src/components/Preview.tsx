@@ -21,9 +21,11 @@ interface Props {
   items: CanvasItem[]
   onExportZip?: () => void
   exporting?: boolean
+  includeImages?: boolean
+  onToggleIncludeImages?: (v: boolean) => void
 }
 
-export function Preview({ items, onExportZip, exporting }: Props) {
+export function Preview({ items, onExportZip, exporting, includeImages, onToggleIncludeImages }: Props) {
   const [mode, setMode] = useState<ViewMode>('merged')
   const [device, setDevice] = useState<DeviceMode>('desktop')
 
@@ -49,9 +51,19 @@ export function Preview({ items, onExportZip, exporting }: Props) {
           </p>
         </div>
         {onExportZip && items.length > 0 && (
-          <button className="zip-btn primary" onClick={onExportZip} disabled={exporting}>
-            {exporting ? '出力中...' : '↓ ZIP ダウンロード'}
-          </button>
+          <div className="zip-export-group">
+            <label className="include-images-toggle">
+              <input
+                type="checkbox"
+                checked={includeImages ?? true}
+                onChange={e => onToggleIncludeImages?.(e.target.checked)}
+              />
+              画像を含める
+            </label>
+            <button className="zip-btn primary" onClick={onExportZip} disabled={exporting}>
+              {exporting ? '出力中...' : '↓ ZIP ダウンロード'}
+            </button>
+          </div>
         )}
       </div>
       <div className="preview-mode-bar">

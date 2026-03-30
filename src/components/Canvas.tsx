@@ -18,11 +18,13 @@ interface Props {
   onViewTsx?: (sectionId: string) => void
   onExportZip?: () => void
   exporting?: boolean
+  includeImages?: boolean
+  onToggleIncludeImages?: (v: boolean) => void
   onSaveProject?: () => void
   onNewProject?: () => void
 }
 
-export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, exporting, onSaveProject, onNewProject }: Props) {
+export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, exporting, includeImages, onToggleIncludeImages, onSaveProject, onNewProject }: Props) {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const dragRef = useRef<number | null>(null)
@@ -92,9 +94,19 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
               <button className="save-project-btn" onClick={onSaveProject}>保存</button>
             )}
             {onExportZip && items.length > 0 && (
-              <button className="zip-btn primary" onClick={onExportZip} disabled={exporting}>
-                {exporting ? '出力中...' : '\u2193 ZIP ダウンロード'}
-              </button>
+              <div className="zip-export-group">
+                <label className="include-images-toggle">
+                  <input
+                    type="checkbox"
+                    checked={includeImages ?? true}
+                    onChange={e => onToggleIncludeImages?.(e.target.checked)}
+                  />
+                  画像を含める
+                </label>
+                <button className="zip-btn primary" onClick={onExportZip} disabled={exporting}>
+                  {exporting ? '出力中...' : '\u2193 ZIP ダウンロード'}
+                </button>
+              </div>
             )}
             {editingIndex !== null && (
               <button className="inspector-btn" onClick={() => { setEditingIndex(null); setSelectedNode(null) }}>
