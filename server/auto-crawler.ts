@@ -2,7 +2,7 @@
  * Auto-Crawler - Processes URLs from a queue file automatically.
  *
  * Reads URLs from .partcopy/crawl-queue.txt and submits them
- * to /api/extract one at a time with random delays to avoid detection.
+ * to /api/extract with parallel processing (up to CONCURRENCY).
  */
 import { readFile, writeFile, appendFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
@@ -12,22 +12,24 @@ import { logger } from './logger.js'
 const QUEUE_FILE = path.resolve(process.cwd(), '.partcopy/crawl-queue.txt')
 const DONE_FILE = path.resolve(process.cwd(), '.partcopy/crawl-done.txt')
 const CHECK_INTERVAL = 10_000 // 10秒ごとにキューをチェック
-const MIN_DELAY = 3_000 // 3秒
-const MAX_DELAY = 8_000 // 8秒
+const MIN_DELAY = 2_000 // 2秒（バッチ間の待機）
+const MAX_DELAY = 5_000 // 5秒
+const CONCURRENCY = 2 // 同時処理数
 const API_PORT = Number(process.env.PARTCOPY_API_PORT || 3002)
 const API_BASE = `http://127.0.0.1:${API_PORT}`
 
-let active = false
-let currentUrl: string | null = null
-let timer: ReturnType<typeof setTimeout> | null = null
+let activeCount = 0
+let activeUrls: string[] = []
 let stopped = false
 
 export function isAutoCrawlActive(): boolean {
-  return active
+  return activeCount > 0
 }
 
 export function getCurrentCrawlUrl(): string | null {
-  return currentUrl
+  if (activeUrls.length === 0) return null
+  if (activeUrls.length === 1) return activeUrls[0]
+  return `${activeUrls.length}件を並列処理中`
 }
 
 /**
@@ -63,15 +65,13 @@ async function readDone(): Promise<string[]> {
 }
 
 /**
- * Remove the first URL from the queue file.
+ * Remove specific URLs from the queue file.
  */
-async function dequeueFirst(): Promise<void> {
+async function dequeueUrls(urls: string[]): Promise<void> {
+  const removeSet = new Set(urls)
   const lines = await readQueue()
-  if (lines.length <= 1) {
-    await writeFile(QUEUE_FILE, '', 'utf-8')
-  } else {
-    await writeFile(QUEUE_FILE, lines.slice(1).join('\n') + '\n', 'utf-8')
-  }
+  const remaining = lines.filter(line => !removeSet.has(line))
+  await writeFile(QUEUE_FILE, remaining.length > 0 ? remaining.join('\n') + '\n' : '', 'utf-8')
 }
 
 /**
@@ -148,10 +148,10 @@ function randomDelay(): number {
 }
 
 /**
- * Main check loop: process one URL from the queue if available.
+ * Main check loop: take up to CONCURRENCY URLs and process in parallel.
  */
 async function checkAndProcess(): Promise<void> {
-  if (stopped || active) return
+  if (stopped || activeCount > 0) return
 
   const queue = await readQueue()
   if (queue.length === 0) {
@@ -159,47 +159,58 @@ async function checkAndProcess(): Promise<void> {
     return
   }
 
-  const url = queue[0]
-  active = true
-  currentUrl = url
+  // Take up to CONCURRENCY URLs
+  const batch = queue.slice(0, CONCURRENCY)
+  activeCount = batch.length
+  activeUrls = [...batch]
 
-  try {
-    await submitAndWait(url)
+  logger.info('Auto-crawl: starting batch', { count: batch.length, urls: batch })
 
-    // Move URL from queue to done regardless of success/failure
-    await dequeueFirst()
-    await markDone(url)
+  const results = await Promise.allSettled(
+    batch.map(async (url) => {
+      try {
+        await submitAndWait(url)
+      } finally {
+        await markDone(url)
+        // Remove from active list as each completes
+        activeUrls = activeUrls.filter(u => u !== url)
+      }
+    })
+  )
 
-    logger.info('Auto-crawl: URL processed and moved to done', { url })
-  } catch (err: any) {
-    logger.error('Auto-crawl: processing error', { url, error: err.message })
-  } finally {
-    currentUrl = null
+  // Remove processed URLs from queue
+  await dequeueUrls(batch)
+
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].status === 'rejected') {
+      logger.error('Auto-crawl: processing error', { url: batch[i], error: (results[i] as PromiseRejectedResult).reason?.message })
+    } else {
+      logger.info('Auto-crawl: URL processed', { url: batch[i] })
+    }
   }
 
-  // If there are more URLs, schedule the next one with a random delay
+  activeCount = 0
+  activeUrls = []
+
+  // If there are more URLs, schedule the next batch with a delay
   if (!stopped) {
     const remaining = await readQueue()
     if (remaining.length > 0) {
       const delay = randomDelay()
-      currentUrl = `次のURL待機中... (${Math.round(delay / 1000)}秒後)`
-      logger.info('Auto-crawl: next URL in queue, waiting before processing', {
-        nextUrl: remaining[0],
+      activeUrls = [`次のバッチ待機中... (${Math.round(delay / 1000)}秒後)`]
+      logger.info('Auto-crawl: more URLs in queue, waiting before next batch', {
         delayMs: delay,
         remainingCount: remaining.length
       })
-      timer = setTimeout(() => {
+      setTimeout(() => {
+        activeUrls = []
         checkAndProcess().catch(err => {
           logger.error('Auto-crawl: scheduled check failed', { error: err.message })
-          active = false
-          currentUrl = null
+          activeCount = 0
+          activeUrls = []
         })
       }, delay)
-    } else {
-      active = false
     }
-  } else {
-    active = false
   }
 }
 
@@ -209,7 +220,7 @@ async function checkAndProcess(): Promise<void> {
 export function startAutoCrawler(): void {
 
   stopped = false
-  logger.info('Auto-crawl: starting auto-crawler', { checkIntervalMs: CHECK_INTERVAL })
+  logger.info('Auto-crawl: starting auto-crawler', { checkIntervalMs: CHECK_INTERVAL, concurrency: CONCURRENCY })
 
   // Initial check
   checkAndProcess().catch(err => {
@@ -236,10 +247,6 @@ export function startAutoCrawler(): void {
  */
 export function stopAutoCrawler(): void {
   stopped = true
-  if (timer) {
-    clearTimeout(timer)
-    timer = null
-  }
   logger.info('Auto-crawl: stopped')
 }
 
@@ -279,13 +286,14 @@ export async function getQueueStatus(): Promise<{
   done: string[]
   active: boolean
   currentUrl: string | null
+  concurrency: number
 }> {
   const queue = await readQueue()
   const done = await readDone()
 
   // メモリ変数がtrueならそれを使う（workerプロセス内）
-  if (active) {
-    return { queue, done, active, currentUrl }
+  if (activeCount > 0) {
+    return { queue, done, active: true, currentUrl: getCurrentCrawlUrl(), concurrency: CONCURRENCY }
   }
 
   // APIサーバーからの呼び出し: キューにURLがあれば実行中とみなす
@@ -296,6 +304,7 @@ export async function getQueueStatus(): Promise<{
     queue,
     done,
     active: isProcessing,
-    currentUrl: processingUrl
+    currentUrl: processingUrl,
+    concurrency: CONCURRENCY
   }
 }

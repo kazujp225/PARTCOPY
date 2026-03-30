@@ -12,28 +12,57 @@ interface Props {
 
 export function Dashboard({ sections, canvas, onNavigate, onExtract, extractLoading }: Props) {
   const [extractUrl, setExtractUrl] = useState('')
-  const [crawlQueue, setCrawlQueue] = useState(0)
-  const [crawlDone, setCrawlDone] = useState(0)
+  const [crawlQueueUrls, setCrawlQueueUrls] = useState<string[]>([])
+  const [crawlDoneUrls, setCrawlDoneUrls] = useState<string[]>([])
   const [crawlActive, setCrawlActive] = useState(false)
   const [crawlUrl, setCrawlUrl] = useState<string | null>(null)
+  const [bulkUrls, setBulkUrls] = useState('')
+  const [bulkAdding, setBulkAdding] = useState(false)
+
+  const fetchStatus = async () => {
+    try {
+      const res = await fetch('/api/crawl-queue')
+      if (res.ok) {
+        const data = await res.json()
+        setCrawlQueueUrls(data.queue || [])
+        setCrawlDoneUrls(data.done || [])
+        setCrawlActive(data.active || false)
+        setCrawlUrl(data.currentUrl || null)
+      }
+    } catch {}
+  }
 
   useEffect(() => {
-    const fetchStatus = async () => {
-      try {
-        const res = await fetch('/api/crawl-queue')
-        if (res.ok) {
-          const data = await res.json()
-          setCrawlQueue(data.queue?.length || 0)
-          setCrawlDone(data.done?.length || 0)
-          setCrawlActive(data.active || false)
-          setCrawlUrl(data.currentUrl || null)
-        }
-      } catch {}
-    }
     fetchStatus()
-    const interval = setInterval(fetchStatus, 10000)
+    const interval = setInterval(fetchStatus, 5000)
     return () => clearInterval(interval)
   }, [])
+
+  const handleBulkAdd = async () => {
+    const urls = bulkUrls.split('\n').map(u => u.trim()).filter(u => /^https?:\/\//i.test(u))
+    if (urls.length === 0) return
+    setBulkAdding(true)
+    try {
+      const res = await fetch('/api/crawl-queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls })
+      })
+      if (res.ok) {
+        setBulkUrls('')
+        await fetchStatus()
+      }
+    } catch {} finally {
+      setBulkAdding(false)
+    }
+  }
+
+  const handleClearQueue = async () => {
+    try {
+      await fetch('/api/crawl-queue', { method: 'DELETE' })
+      await fetchStatus()
+    } catch {}
+  }
 
   const totalParts = sections.length
   const families = new Map<string, number>()
@@ -74,6 +103,8 @@ export function Dashboard({ sections, canvas, onNavigate, onExtract, extractLoad
     }
   })
 
+  const crawlQueue = crawlQueueUrls.length
+  const crawlDone = crawlDoneUrls.length
   const crawlTotal = crawlQueue + crawlDone
   const crawlPercent = crawlTotal > 0 ? Math.round((crawlDone / crawlTotal) * 100) : 0
 
@@ -131,23 +162,80 @@ export function Dashboard({ sections, canvas, onNavigate, onExtract, extractLoad
         </div>
       )}
 
-      {/* Auto-crawl status */}
-      {(crawlActive || crawlQueue > 0) && (
-        <div className="dash-crawl-status">
-          <div className="dash-crawl-header">
-            <span className="dash-crawl-title">
-              {crawlActive ? '● 自動取得中' : '○ 自動取得待機中'}
-            </span>
-            <span className="dash-crawl-progress-text">
-              {crawlDone}/{crawlTotal} 完了 ({crawlPercent}%)
-            </span>
+      {/* Auto-crawl management */}
+      <div className="dash-section-header">
+        <h2>AUTO COLLECT</h2>
+        <p>自動収集</p>
+      </div>
+      <div className="dash-autocrawl-panel">
+        {/* Progress */}
+        {(crawlActive || crawlQueue > 0) && (
+          <div className="dash-crawl-status">
+            <div className="dash-crawl-header">
+              <span className={`dash-crawl-title${crawlActive ? ' active' : ''}`}>
+                {crawlActive ? '● 自動取得中' : '○ 自動取得待機中'}
+              </span>
+              <span className="dash-crawl-progress-text">
+                {crawlDone}/{crawlTotal} 完了 ({crawlPercent}%)
+              </span>
+            </div>
+            <div className="dash-crawl-bar">
+              <div className="dash-crawl-bar-fill" style={{ width: `${crawlPercent}%` }} />
+            </div>
+            {crawlUrl && <p className="dash-crawl-url">処理中: {crawlUrl}</p>}
           </div>
-          <div className="dash-crawl-bar">
-            <div className="dash-crawl-bar-fill" style={{ width: `${crawlPercent}%` }} />
+        )}
+
+        {/* Bulk URL add */}
+        <div className="dash-autocrawl-section">
+          <h3 className="dash-autocrawl-label">URLを一括追加</h3>
+          <textarea
+            className="dash-autocrawl-textarea"
+            placeholder={"https://example.com\nhttps://example2.com\n1行に1つのURLを入力..."}
+            value={bulkUrls}
+            onChange={e => setBulkUrls(e.target.value)}
+            rows={4}
+            disabled={bulkAdding}
+          />
+          <div className="dash-autocrawl-row">
+            <button
+              className="dash-autocrawl-btn"
+              onClick={handleBulkAdd}
+              disabled={bulkAdding || !bulkUrls.trim()}
+            >
+              {bulkAdding ? '追加中...' : 'キューに追加'}
+            </button>
           </div>
-          {crawlUrl && <p className="dash-crawl-url">処理中: {crawlUrl}</p>}
         </div>
-      )}
+
+        {/* Queue list */}
+        {crawlQueueUrls.length > 0 && (
+          <div className="dash-autocrawl-section">
+            <div className="dash-autocrawl-queue-header">
+              <h3 className="dash-autocrawl-label">キュー ({crawlQueueUrls.length}件)</h3>
+              <button className="dash-autocrawl-btn-sm danger" onClick={handleClearQueue}>
+                クリア
+              </button>
+            </div>
+            <ul className="dash-autocrawl-queue-list">
+              {crawlQueueUrls.slice(0, 20).map((url, i) => (
+                <li key={i} className="dash-autocrawl-queue-item">
+                  {i === 0 && crawlActive && <span className="dash-queue-active-dot">●</span>}
+                  <span className="dash-queue-url">{url}</span>
+                </li>
+              ))}
+              {crawlQueueUrls.length > 20 && (
+                <li className="dash-autocrawl-queue-more">...他 {crawlQueueUrls.length - 20}件</li>
+              )}
+            </ul>
+          </div>
+        )}
+
+        {/* Done summary */}
+        {crawlDone > 0 && !crawlActive && crawlQueue === 0 && (
+          <p className="dash-autocrawl-done">完了済み: {crawlDone}件</p>
+        )}
+      </div>
 
       {/* Category grid (STOCK DESIGN style) */}
       <div className="dash-section-header">

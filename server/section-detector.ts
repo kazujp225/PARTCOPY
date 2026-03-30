@@ -276,13 +276,30 @@ export async function detectSections(page: Page): Promise<DetectedSection[]> {
       }
     }
 
-    // ---- Step 4: Deduplicate and sort ----
+    // ---- Step 4: Deduplicate, filter, and sort ----
+
+    // Skip cookie/consent banners and overlays
+    const COOKIE_BANNER_RE = /cookie|consent|gdpr|onetrust|truste|cc-banner|cc-window|privacy.?banner|cookie.?notice|cookie.?bar|cookie.?popup|cookie.?overlay|accept.?cookie/i
+    const isCookieBanner = (el: Element): boolean => {
+      const id = el.id || ''
+      const cls = (el.className || '').toString()
+      const role = el.getAttribute('role') || ''
+      const aria = el.getAttribute('aria-label') || ''
+      if (COOKIE_BANNER_RE.test(id) || COOKIE_BANNER_RE.test(cls) || COOKIE_BANNER_RE.test(role) || COOKIE_BANNER_RE.test(aria)) return true
+      // Check text content (short elements only, to avoid false positives on long content)
+      const text = (el.textContent || '').trim()
+      if (text.length < 500 && /cookie|クッキー|Cookie/.test(text) && /(同意|承諾|accept|agree|consent|許可)/i.test(text)) return true
+      return false
+    }
+
     const uniqueSections: Element[] = []
     const seen = new Set<Element>()
     for (const el of finalSections) {
       if (seen.has(el)) continue
       // Skip hidden elements (display:none, visibility:hidden, opacity:0)
       if (isHiddenElement(el)) continue
+      // Skip cookie/consent banners
+      if (isCookieBanner(el)) continue
       // Remove if fully contained by another stronger section
       const containedByOther = finalSections.some(o => (
         o !== el &&

@@ -452,6 +452,82 @@ function buildExportAssetFileName(key: string, sourceUrl: string, contentType: s
   return `${stem}-${hash}${ext}`
 }
 
+/**
+ * Convert raw HTML string to JSX-compatible string.
+ * Handles attribute renaming, self-closing tags, style parsing, etc.
+ */
+function htmlToJsx(html: string): string {
+  let jsx = html
+
+  // Remove HTML comments
+  jsx = jsx.replace(/<!--[\s\S]*?-->/g, '')
+
+  // Self-closing void elements
+  const voidElements = 'area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr'
+  jsx = jsx.replace(new RegExp(`<(${voidElements})(\\b[^>]*)(?<!/)>`, 'gi'), '<$1$2 />')
+
+  // class → className
+  jsx = jsx.replace(/\bclass=/g, 'className=')
+
+  // for → htmlFor
+  jsx = jsx.replace(/\bfor=/g, 'htmlFor=')
+
+  // tabindex → tabIndex
+  jsx = jsx.replace(/\btabindex=/g, 'tabIndex=')
+
+  // readonly → readOnly
+  jsx = jsx.replace(/\breadonly(?=[\s/>])/g, 'readOnly')
+
+  // maxlength → maxLength
+  jsx = jsx.replace(/\bmaxlength=/g, 'maxLength=')
+
+  // colspan → colSpan, rowspan → rowSpan
+  jsx = jsx.replace(/\bcolspan=/g, 'colSpan=')
+  jsx = jsx.replace(/\browspan=/g, 'rowSpan=')
+
+  // cellpadding → cellPadding, cellspacing → cellSpacing
+  jsx = jsx.replace(/\bcellpadding=/g, 'cellPadding=')
+  jsx = jsx.replace(/\bcellspacing=/g, 'cellSpacing=')
+
+  // crossorigin → crossOrigin
+  jsx = jsx.replace(/\bcrossorigin=/g, 'crossOrigin=')
+
+  // autocomplete → autoComplete
+  jsx = jsx.replace(/\bautocomplete=/g, 'autoComplete=')
+
+  // Convert inline style strings to JSX objects
+  jsx = jsx.replace(/\bstyle="([^"]*)"/g, (_match, styleStr: string) => {
+    const pairs = styleStr
+      .split(';')
+      .map(s => s.trim())
+      .filter(Boolean)
+      .map(decl => {
+        const colonIdx = decl.indexOf(':')
+        if (colonIdx === -1) return null
+        const prop = decl.slice(0, colonIdx).trim()
+        const val = decl.slice(colonIdx + 1).trim()
+        // Convert kebab-case to camelCase
+        const camelProp = prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase())
+        // Wrap value in quotes, handle numeric values
+        const numericVal = parseFloat(val)
+        if (!isNaN(numericVal) && String(numericVal) === val && !val.includes(' ')) {
+          return `${camelProp}: ${numericVal}`
+        }
+        return `${camelProp}: "${val.replace(/"/g, '\\"')}"`
+      })
+      .filter(Boolean)
+    return `style={{${pairs.join(', ')}}}`
+  })
+
+  // Remove boolean attributes without values (checked, disabled, etc.)
+  // and convert to JSX: checked → checked={true} (already valid in JSX as standalone)
+
+  // Remove on* event handlers (onclick, onload, etc.)
+  jsx = jsx.replace(/\bon[a-z]+=["'][^"']*["']/gi, '')
+
+  return jsx
+}
+
 function escapeTemplateLiteral(value: string) {
   return value
     .replace(/\\/g, '\\\\')
@@ -1197,10 +1273,36 @@ app.get('/api/jobs/:id/sections', async (req, res) => {
 
     const sections = (record.sections || []).map((section: any) => ({
       ...section,
-      htmlUrl: (section.sanitized_html_storage_path || section.raw_html_storage_path) ? `/api/sections/${section.id}/render` : null
+      htmlUrl: (section.sanitized_html_storage_path || section.raw_html_storage_path) ? `/api/sections/${section.id}/render` : null,
+      thumbnailUrl: section.thumbnail_storage_path ? `/api/sections/${section.id}/thumbnail` : null
     }))
 
     res.json({ sections })
+  } catch (err: any) {
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+// ============================================================
+// Thumbnail: Serve section thumbnail image
+// ============================================================
+app.get('/api/sections/:sectionId/thumbnail', async (req, res) => {
+  const { sectionId } = req.params
+  try {
+    const section = await getSectionRecord(sectionId)
+    if (!section?.thumbnail_storage_path) {
+      res.status(404).send('No thumbnail')
+      return
+    }
+    const file = await readBucketFile(STORAGE_BUCKETS.SECTION_THUMBNAILS, section.thumbnail_storage_path)
+      || await readBucketFile(STORAGE_BUCKETS.RAW_HTML, section.thumbnail_storage_path)
+    if (!file) {
+      res.status(404).send('Thumbnail not found')
+      return
+    }
+    res.setHeader('Content-Type', file.contentType || 'image/png')
+    res.setHeader('Cache-Control', 'public, max-age=86400')
+    res.send(file.buffer)
   } catch (err: any) {
     res.status(500).json({ error: safeErrorMessage(err) })
   }
@@ -1309,7 +1411,8 @@ app.get('/api/library', async (req, res) => {
     res.json({
       sections: results.map((section: any) => ({
         ...section,
-        htmlUrl: (section.sanitized_html_storage_path || section.raw_html_storage_path) ? `/api/sections/${section.id}/render` : null
+        htmlUrl: (section.sanitized_html_storage_path || section.raw_html_storage_path) ? `/api/sections/${section.id}/render` : null,
+        thumbnailUrl: section.thumbnail_storage_path ? `/api/sections/${section.id}/thumbnail` : null
       }))
     })
   } catch (err: any) {
@@ -2171,7 +2274,7 @@ app.post('/api/export/zip', async (req, res) => {
         const extractedTexts = extractTextsForGuide(html)
         const extractedImages = extractImagesForGuide(html)
 
-        const escapedHtml = escapeTemplateLiteral(html)
+        const jsxContent = htmlToJsx(html)
 
         // Generate edit guide comment
         const guideTexts = extractedTexts.map(t => ` * - "${t}"`).join('\n')
@@ -2181,20 +2284,20 @@ app.post('/api/export/zip', async (req, res) => {
  * 編集ガイド - ${componentName}
  * ========================================
  *
- * 【テキスト一覧】（HTML内で直接編集可能）
+ * 【テキスト一覧】（JSX内で直接編集可能）
 ${guideTexts || ' * （テキストなし）'}
  *
  * 【画像パス一覧】
 ${guideImages || ' * （画像なし）'}
  *
  * 【編集方法】
- * - テキスト: dangerouslySetInnerHTML内のHTMLを直接編集
+ * - テキスト: JSX内のテキストを直接編集
  * - 画像: src属性のパスを変更（public/assets/に配置）
  * - スタイル: ${componentName}.css を編集
  * - レイアウト: CSS内の該当クラスを修正
  */`
 
-        const tsx = `import './${componentName}.css'\n\n${editGuide}\n\nexport default function ${componentName}() {\n  return (\n    <section\n      className="${prepared.scopeClass}"\n      data-partcopy-section="${prepared.sectionId}"\n      dangerouslySetInnerHTML={{ __html: \`${escapedHtml}\` }}\n    />\n  )\n}\n`
+        const tsx = `import './${componentName}.css'\n\n${editGuide}\n\nexport default function ${componentName}() {\n  return (\n    <section\n      className="${prepared.scopeClass}"\n      data-partcopy-section="${prepared.sectionId}"\n    >\n${jsxContent.split('\n').map(l => '      ' + l).join('\n')}\n    </section>\n  )\n}\n`
 
         // Store CSS separately
         const componentCssContent = `/* ${componentName} - Scoped CSS (auto-generated by PARTCOPY) */\n/* セクションスコープ: .${prepared.scopeClass} */\n\n${css}\n`
@@ -2203,9 +2306,114 @@ ${guideImages || ' * （画像なし）'}
       }
     }
 
-    const imports = components.map((component) => `import ${component.name} from './components/${component.name}'`).join('\n')
-    const renders = components.map((component) => `      <${component.name} />`).join('\n')
-    const appTsx = `${imports}\n\nexport default function App() {\n  return (\n    <main className="pc-preview-page">\n${renders}\n    </main>\n  )\n}\n`
+    const blockFamilyJa: Record<string, string> = {
+      navigation: 'ナビゲーション',
+      hero: 'ヒーロー',
+      feature: '特徴・サービス',
+      social_proof: '導入実績・信頼',
+      stats: '数字・実績',
+      pricing: '料金プラン',
+      faq: 'よくある質問',
+      content: 'コンテンツ',
+      cta: 'CTA（行動喚起）',
+      contact: 'お問い合わせ',
+      recruit: '採用',
+      footer: 'フッター',
+      news_list: 'お知らせ',
+      timeline: '沿革・タイムライン',
+      company_profile: '会社概要',
+      gallery: 'ギャラリー',
+      logo_cloud: 'ロゴ一覧',
+      section: 'セクション',
+      CUSTOM: 'カスタム'
+    }
+
+    // --- Multi-page React Router structure ---
+    const componentImports = components.map(c => `import ${c.name} from './components/${c.name}'`).join('\n')
+    const allSectionsRender = components.map(c => `      <${c.name} />`).join('\n')
+
+    // Generate slug for each component
+    const componentSlugs = components.map(c => {
+      const slug = c.name.replace(/Section\d*$/, '').replace(/([A-Z])/g, '-$1').toLowerCase().replace(/^-/, '')
+      return { ...c, slug }
+    })
+
+    const routeImports = componentSlugs.map(c =>
+      `  { path: '/${c.slug}', element: <${c.name} />, label: '${blockFamilyJa[c.blockFamily] || c.blockFamily}', name: '${c.name}' }`
+    ).join(',\n')
+
+    const layoutTsx = `import { NavLink, Outlet } from 'react-router-dom'
+
+interface RouteInfo {
+  path: string
+  label: string
+  name: string
+}
+
+export default function Layout({ routes }: { routes: RouteInfo[] }) {
+  return (
+    <div className="pc-layout">
+      <nav className="pc-sidebar">
+        <div className="pc-sidebar-header">
+          <h1>PARTCOPY</h1>
+        </div>
+        <ul className="pc-sidebar-nav">
+          <li>
+            <NavLink to="/" end className={({ isActive }) => isActive ? 'active' : ''}>
+              すべて表示
+            </NavLink>
+          </li>
+          {routes.map(r => (
+            <li key={r.path}>
+              <NavLink to={r.path} className={({ isActive }) => isActive ? 'active' : ''}>
+                {r.label}
+                <span className="pc-nav-component">{r.name}</span>
+              </NavLink>
+            </li>
+          ))}
+        </ul>
+      </nav>
+      <main className="pc-main">
+        <Outlet />
+      </main>
+    </div>
+  )
+}
+`
+
+    const homeTsx = `${componentImports}
+
+export default function Home() {
+  return (
+    <div className="pc-preview-page">
+${allSectionsRender}
+    </div>
+  )
+}
+`
+
+    const appTsx = `import { BrowserRouter, Routes, Route } from 'react-router-dom'
+${componentImports}
+import Layout from './Layout'
+import Home from './pages/Home'
+
+const routes = [
+${routeImports}
+]
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route element={<Layout routes={routes} />}>
+          <Route index element={<Home />} />
+${componentSlugs.map(c => `          <Route path="/${c.slug}" element={<${c.name} />} />`).join('\n')}
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  )
+}
+`
 
     const indexTsx = `import ReactDOM from 'react-dom/client'\nimport './index.css'\nimport App from './App'\n\nReactDOM.createRoot(document.getElementById('root')!).render(<App />)\n`
 
@@ -2219,12 +2427,13 @@ ${guideImages || ' * （画像なし）'}
         build: 'tsc -b && vite build'
       },
       dependencies: {
-        react: '^18.3.1',
-        'react-dom': '^18.3.1'
+        react: '^19.2.4',
+        'react-dom': '^19.2.4',
+        'react-router-dom': '^7.5.0'
       },
       devDependencies: {
-        '@types/react': '^18.3.12',
-        '@types/react-dom': '^18.3.1',
+        '@types/react': '^19.2.14',
+        '@types/react-dom': '^19.2.3',
         '@vitejs/plugin-react': '^4.3.4',
         '@tailwindcss/vite': '^4.1.0',
         tailwindcss: '^4.1.0',
@@ -2276,7 +2485,69 @@ ${guideImages || ' * （画像なし）'}
     const designTokensCss = generateDesignTokensCss(extractedColors, extractedFonts)
     const brandGuide = generateBrandGuide(extractedColors, extractedFonts)
 
-    const indexCss = `@import 'tailwindcss';\n@import './design-tokens.css';\n\n${dedupeCssBlocks([PARTCOPY_BASE_CSS, ...globalFontFaceCss]).join('\n\n')}\n`
+    const layoutCss = `
+/* Layout */
+.pc-layout {
+  display: flex;
+  min-height: 100vh;
+}
+.pc-sidebar {
+  width: 240px;
+  background: #111;
+  color: #fff;
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  overflow-y: auto;
+  z-index: 100;
+}
+.pc-sidebar-header {
+  padding: 20px;
+  border-bottom: 1px solid #333;
+}
+.pc-sidebar-header h1 {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+.pc-sidebar-nav {
+  list-style: none;
+  padding: 12px 0;
+  margin: 0;
+}
+.pc-sidebar-nav li a {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 20px;
+  color: #aaa;
+  text-decoration: none;
+  font-size: 13px;
+  transition: all 0.15s;
+  border-left: 3px solid transparent;
+}
+.pc-sidebar-nav li a:hover {
+  color: #fff;
+  background: rgba(255,255,255,0.05);
+}
+.pc-sidebar-nav li a.active {
+  color: #fff;
+  background: rgba(255,255,255,0.08);
+  border-left-color: #10b981;
+}
+.pc-nav-component {
+  font-size: 10px;
+  color: #666;
+  margin-top: 2px;
+}
+.pc-main {
+  margin-left: 240px;
+  flex: 1;
+  min-width: 0;
+}
+`
+
+    const indexCss = `@import 'tailwindcss';\n@import './design-tokens.css';\n\n${dedupeCssBlocks([PARTCOPY_BASE_CSS, layoutCss, ...globalFontFaceCss]).join('\n\n')}\n`
 
     // Generate setup.sh
     const setupSh = `#!/bin/bash
@@ -2339,27 +2610,6 @@ npm run build
 `
 
     // Generate CLAUDE.md (Claude Code用の指示書)
-    const blockFamilyJa: Record<string, string> = {
-      navigation: 'ナビゲーション',
-      hero: 'ヒーロー',
-      feature: '特徴・サービス',
-      social_proof: '導入実績・信頼',
-      stats: '数字・実績',
-      pricing: '料金プラン',
-      faq: 'よくある質問',
-      content: 'コンテンツ',
-      cta: 'CTA（行動喚起）',
-      contact: 'お問い合わせ',
-      recruit: '採用',
-      footer: 'フッター',
-      news_list: 'お知らせ',
-      timeline: '沿革・タイムライン',
-      company_profile: '会社概要',
-      gallery: 'ギャラリー',
-      logo_cloud: 'ロゴ一覧',
-      section: 'セクション',
-      CUSTOM: 'カスタム'
-    }
     const componentList = components
       .map((c, i) => `| ${i + 1} | \`src/components/${c.name}.tsx\` | ${blockFamilyJa[c.blockFamily] || c.blockFamily} |`)
       .join('\n')
@@ -2428,9 +2678,12 @@ npm run build
 
 \`\`\`
 ├── src/
-│   ├── App.tsx              ← メイン：全セクションを縦に並べている
+│   ├── App.tsx              ← ルーティング定義（React Router）
+│   ├── Layout.tsx           ← サイドバー付きレイアウト
 │   ├── index.tsx            ← エントリーポイント
 │   ├── index.css            ← ベースCSS + フォント定義
+│   ├── pages/
+│   │   └── Home.tsx         ← 全セクション一覧ページ
 │   └── components/          ← 各セクションのコンポーネント
 │       └── (下の一覧を参照)
 ├── public/
@@ -2554,8 +2807,7 @@ ${brandGuide}
    このクラス名を変更すると、スタイルが全く効かなくなります。
 
 2. **コンポーネントの描画方式について**
-   一部のコンポーネントはネイティブTSX（JSX要素で直接記述）、残りは \`dangerouslySetInnerHTML\` でHTMLを描画しています。
-   TSXコンポーネントはそのままReactの作法で編集できます。\`dangerouslySetInnerHTML\` のコンポーネントは中のHTMLテキストだけを編集してください。
+   全コンポーネントはJSX形式で記述されています。Reactの作法に従って編集してください。
 
 3. **コンポーネントの基本構造を保つ**
    \`export default function ○○Section()\` の形を維持してください。
@@ -2606,6 +2858,8 @@ ${brandGuide}
     archive.append(readmeMd, { name: 'README.md' })
     archive.append(appTsx, { name: 'src/App.tsx' })
     archive.append(indexTsx, { name: 'src/index.tsx' })
+    archive.append(layoutTsx, { name: 'src/Layout.tsx' })
+    archive.append(homeTsx, { name: 'src/pages/Home.tsx' })
     archive.append(indexCss, { name: 'src/index.css' })
     archive.append(designTokensCss, { name: 'src/design-tokens.css' })
 
