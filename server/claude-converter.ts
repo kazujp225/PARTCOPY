@@ -228,7 +228,7 @@ function runClaudeConversion(prompt: string): Promise<string> {
         LANG: process.env.LANG,
         TERM: process.env.TERM,
       },
-      timeout: 120_000,
+      timeout: 300_000,
     })
 
     let stdout = ''

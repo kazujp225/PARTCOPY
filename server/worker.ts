@@ -27,7 +27,6 @@ import {
   updateSourceSite,
   writeStoredFile
 } from './local-store.js'
-// TSX変換はZIPエクスポート時にオンデマンド実行（server/index.ts）
 import { HAS_SUPABASE, supabaseAdmin } from './supabase.js'
 import { STORAGE_BUCKETS } from './storage-config.js'
 import { launchBrowser, collectPageLinks } from './capture-runner.js'
@@ -50,6 +49,57 @@ const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
 const SITE_TIMEOUT_MS = 180000 // 180s overall timeout for download + section detection
 const DOWNLOAD_TIMEOUT_MS = 150000 // 150s timeout for site download (images+fonts take time)
 const DETECT_TIMEOUT_MS = 30000 // 30s timeout for section detection
+const API_PORT = process.env.PARTCOPY_API_PORT || '3002'
+
+// ============================================================
+// Background TSX Pre-conversion
+// ============================================================
+async function backgroundTsxConversion(siteId: string) {
+  logger.info('Background TSX conversion: starting', { siteId })
+
+  // Fetch all sections for this site that don't have TSX yet
+  let sections: { id: string; block_family: string }[] = []
+  if (HAS_SUPABASE) {
+    const { data } = await supabaseAdmin
+      .from('source_sections')
+      .select('id, block_family')
+      .eq('site_id', siteId)
+      .is('tsx_code_storage_path', null)
+      .order('order_index', { ascending: true })
+    sections = data || []
+  }
+
+  if (sections.length === 0) {
+    logger.info('Background TSX conversion: no sections to convert', { siteId })
+    return
+  }
+
+  logger.info('Background TSX conversion: converting sections', { siteId, count: sections.length })
+
+  let converted = 0
+  let failed = 0
+  for (const sec of sections) {
+    if (shuttingDown) break
+    try {
+      const res = await fetch(`http://127.0.0.1:${API_PORT}/api/sections/${sec.id}/convert-tsx`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(360_000) // 6 min per section
+      })
+      if (res.ok) {
+        converted++
+        logger.info('Background TSX conversion: section done', { sectionId: sec.id, blockFamily: sec.block_family, progress: `${converted + failed}/${sections.length}` })
+      } else {
+        failed++
+        logger.warn('Background TSX conversion: section failed', { sectionId: sec.id, status: res.status })
+      }
+    } catch (err: any) {
+      failed++
+      logger.warn('Background TSX conversion: section error', { sectionId: sec.id, error: err.message })
+    }
+  }
+
+  logger.info('Background TSX conversion: complete', { siteId, converted, failed, total: sections.length })
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<{ result: T; timedOut: false } | { result: undefined; timedOut: true }> {
   let timer: ReturnType<typeof setTimeout>
@@ -782,6 +832,11 @@ async function processJob(job: any) {
       url,
       pageCount: totalPageCount,
       sectionCount: totalSectionCount
+    })
+
+    // Start background TSX pre-conversion (fire-and-forget)
+    backgroundTsxConversion(site.id).catch(err => {
+      logger.warn('Background TSX conversion failed', { siteId: site.id, error: err.message })
     })
 
   } catch (err: any) {

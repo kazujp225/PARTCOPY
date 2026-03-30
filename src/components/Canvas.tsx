@@ -18,7 +18,7 @@ interface Props {
   onViewTsx?: (sectionId: string) => void
   onExportZip?: () => void
   exporting?: boolean
-  exportProgress?: { message: string; current?: number; total?: number; sectionName?: string } | null
+  exportProgress?: { message: string; current?: number; total?: number; sectionName?: string; estimate?: string } | null
   includeImages?: boolean
   onToggleIncludeImages?: (v: boolean) => void
   onSaveProject?: () => void
@@ -127,7 +127,10 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
             <div className="export-overlay-card">
               <div className="export-overlay-spinner" />
               <p className="export-overlay-title">{exportProgress.message}</p>
-              {exportProgress.current != null && exportProgress.total != null && (
+              {exportProgress.estimate && (
+                <p className="export-overlay-estimate">{exportProgress.estimate}</p>
+              )}
+              {exportProgress.current != null && exportProgress.total != null && exportProgress.total > 0 && (
                 <>
                   <div className="export-overlay-progress-bar">
                     <div
@@ -136,16 +139,10 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
                     />
                   </div>
                   <p className="export-overlay-detail">
-                    {exportProgress.current} / {exportProgress.total} パーツ
-                    {exportProgress.sectionName && <> &mdash; {exportProgress.sectionName}</>}
-                  </p>
-                  <p className="export-overlay-estimate">
-                    残り約 {Math.max(1, Math.ceil((exportProgress.total - exportProgress.current) * 0.5))}〜{(exportProgress.total - exportProgress.current) * 2} 分
+                    {exportProgress.current} / {exportProgress.total} パーツ完了
+                    {exportProgress.sectionName && <> — {exportProgress.sectionName}</>}
                   </p>
                 </>
-              )}
-              {!exportProgress.current && (
-                <p className="export-overlay-sub">{exportProgress.message === 'ZIP生成中...' ? 'アセットを収集しています...' : ''}</p>
               )}
             </div>
           </div>

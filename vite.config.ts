@@ -14,7 +14,10 @@ export default defineConfig({
       ignored: ['**/.partcopy/**']
     },
     proxy: {
-      '/api': `http://localhost:${apiPort}`,
+      '/api': {
+        target: `http://localhost:${apiPort}`,
+        timeout: 600000,
+      },
       '/assets': `http://localhost:${apiPort}`
     }
   }

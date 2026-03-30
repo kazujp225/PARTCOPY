@@ -1681,7 +1681,9 @@ body {
   background: white;
   box-shadow: var(--shadow-md);
   border-radius: var(--radius);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: calc(100vh - 260px);
   transition: max-width 0.3s ease;
 }
 
@@ -3997,9 +3999,9 @@ a.dash-link:hover {
 
 /* Export overlay */
 .export-overlay {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: 9999;
   display: flex;
   align-items: center;
   justify-content: center;

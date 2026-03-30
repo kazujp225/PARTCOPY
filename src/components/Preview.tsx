@@ -21,7 +21,7 @@ interface Props {
   items: CanvasItem[]
   onExportZip?: () => void
   exporting?: boolean
-  exportProgress?: { message: string; current?: number; total?: number; sectionName?: string } | null
+  exportProgress?: { message: string; current?: number; total?: number; sectionName?: string; estimate?: string } | null
   includeImages?: boolean
   onToggleIncludeImages?: (v: boolean) => void
 }

@@ -45,7 +45,7 @@ export default function App() {
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const [tsxResult, setTsxResult] = useState<{ tsx: string; familyName?: string } | null>(null)
   const [exporting, setExporting] = useState(false)
-  const [exportProgress, setExportProgress] = useState<{ message: string; current?: number; total?: number; sectionName?: string } | null>(null)
+  const [exportProgress, setExportProgress] = useState<{ message: string; current?: number; total?: number; sectionName?: string; estimate?: string } | null>(null)
   const [includeImages, setIncludeImages] = useState(true)
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
   const [projectList, setProjectList] = useState<Array<{id: string; name: string; canvas_json: any[]; created_at: string}>>([])
@@ -538,43 +538,55 @@ export default function App() {
       }
       const sectionIds = validBlocks.map(c => c.sectionId)
 
-      // Step 1: Pre-convert sections that don't have TSX yet
-      const needConversion = validBlocks.filter(b => {
+      // Step 1: Pre-convert sections that don't have TSX yet (one by one with progress)
+      const toConvert = validBlocks.filter(b => {
         const sec = sections.find(s => s.id === b.sectionId)
         return sec && !sec.tsx_code_storage_path
       })
 
-      if (needConversion.length > 0) {
-        for (let i = 0; i < needConversion.length; i++) {
-          const block = needConversion[i]
+      if (toConvert.length > 0) {
+        const estimateMin = Math.max(1, Math.ceil(toConvert.length * 1.5))
+        for (let i = 0; i < toConvert.length; i++) {
+          const block = toConvert[i]
           const sec = sections.find(s => s.id === block.sectionId)
           const familyName = sec?.block_family || 'section'
           setExportProgress({
-            message: `TSXに変換中...`,
-            current: i + 1,
-            total: needConversion.length,
+            message: 'ただいま変換しております',
+            estimate: `約${estimateMin}分ほどお待ちください`,
+            current: i,
+            total: toConvert.length,
             sectionName: familyName
           })
           try {
-            const convRes = await fetch(`/api/sections/${block.sectionId}/convert-tsx`, { method: 'POST' })
+            const convRes = await fetch(`/api/sections/${block.sectionId}/convert-tsx`, {
+              method: 'POST',
+              signal: AbortSignal.timeout(360_000) // 6 min per section
+            })
             if (convRes.ok) {
-              // Mark as converted in local state
               setSections(prev => prev.map(s =>
                 s.id === block.sectionId ? { ...s, tsx_code_storage_path: `${s.id}/component.tsx` } : s
               ))
             }
           } catch {
-            // Conversion failed for this section, ZIP will use HTML fallback
+            // Failed — ZIP will use HTML fallback for this section
           }
+          setExportProgress({
+            message: 'ただいま変換しております',
+            estimate: `約${estimateMin}分ほどお待ちください`,
+            current: i + 1,
+            total: toConvert.length,
+            sectionName: familyName
+          })
         }
       }
 
-      // Step 2: Generate ZIP (all sections now have TSX or will use fallback)
+      // Step 2: Generate ZIP (conversions done, server skips already-converted)
       setExportProgress({ message: 'ZIP生成中...' })
       const res = await fetch('/api/export/zip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sectionIds, includeImages })
+        body: JSON.stringify({ sectionIds, includeImages }),
+        signal: AbortSignal.timeout(300_000) // 5 min for ZIP generation
       })
       if (!res.ok) throw new Error('ZIP出力に失敗しました')
       setExportProgress({ message: 'ダウンロード準備中...' })
