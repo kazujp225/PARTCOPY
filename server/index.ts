@@ -2261,6 +2261,28 @@ app.post('/api/export/zip', async (req, res) => {
         storedTsx = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, tsxStoragePath)
       }
 
+      // --- Auto-convert to TSX via Claude if not already converted ---
+      if (!storedTsx) {
+        logger.info('Auto-converting section to TSX via Claude', { sectionId: prepared.sectionId, componentName })
+        try {
+          const scopeClass = prepared.scopeClass
+          const scopedHtml = `<div className="${scopeClass}">\n${prepared.html}\n</div>`
+          const convertedTsx = await convertHtmlToTsx(scopedHtml, prepared.blockFamily)
+          storedTsx = convertedTsx
+
+          // Save to storage for future use
+          if (HAS_SUPABASE) {
+            const tsxPath = `${prepared.sectionId}/component.tsx`
+            const tsxBuffer = Buffer.from(convertedTsx, 'utf-8')
+            await supabaseAdmin.storage.from(STORAGE_BUCKETS.SANITIZED_HTML).upload(tsxPath, tsxBuffer, { contentType: 'text/plain', upsert: true })
+            await supabaseAdmin.from('source_sections').update({ tsx_code_storage_path: tsxPath }).eq('id', prepared.sectionId)
+            logger.info('Saved auto-converted TSX', { sectionId: prepared.sectionId, path: tsxPath })
+          }
+        } catch (convertErr: any) {
+          logger.warn('Auto TSX conversion failed, using HTML fallback', { sectionId: prepared.sectionId, error: convertErr.message })
+        }
+      }
+
       if (storedTsx) {
         // --- TSX path: use Claude-converted component ---
 
@@ -2290,7 +2312,7 @@ app.post('/api/export/zip', async (req, res) => {
 
         components.push({ name: componentName, tsx, blockFamily: prepared.blockFamily })
       } else {
-        // --- Fallback: structured HTML with separate CSS file ---
+        // --- Fallback: structured HTML with separate CSS file (Claude conversion failed) ---
 
         const sectionAssetUrls = dedupeStrings([
           ...collectHtmlAssetUrls(prepared.html),

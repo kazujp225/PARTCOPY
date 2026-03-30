@@ -45,6 +45,7 @@ export default function App() {
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const [tsxResult, setTsxResult] = useState<{ tsx: string; familyName?: string } | null>(null)
   const [exporting, setExporting] = useState(false)
+  const [exportProgress, setExportProgress] = useState<string | null>(null)
   const [includeImages, setIncludeImages] = useState(true)
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
   const [projectList, setProjectList] = useState<Array<{id: string; name: string; canvas_json: any[]; created_at: string}>>([])
@@ -536,12 +537,25 @@ export default function App() {
         return
       }
       const sectionIds = validBlocks.map(c => c.sectionId)
+
+      // Check how many need TSX conversion
+      const needConversion = validBlocks.filter(b => {
+        const sec = sections.find(s => s.id === b.sectionId)
+        return sec && !sec.tsx_code_storage_path
+      }).length
+      if (needConversion > 0) {
+        setExportProgress(`TSXに変換中... (${needConversion}パーツをClaudeが変換します)`)
+      } else {
+        setExportProgress('ZIP生成中...')
+      }
+
       const res = await fetch('/api/export/zip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sectionIds, includeImages })
       })
       if (!res.ok) throw new Error('ZIP出力に失敗しました')
+      setExportProgress('ダウンロード準備中...')
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -553,6 +567,7 @@ export default function App() {
       alert(err.message)
     } finally {
       setExporting(false)
+      setExportProgress(null)
     }
   }, [canvas, sections, includeImages, activeProjectId])
 
@@ -906,13 +921,13 @@ export default function App() {
       {view === 'editor' && (
         <div className="editor-layout">
           <PartsPanel sections={filteredSections} onAdd={addToCanvas} onRemove={removeSection} onViewTsx={handleViewTsx} />
-          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onExportZip={handleExportZip} exporting={exporting} includeImages={includeImages} onToggleIncludeImages={setIncludeImages} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} />
+          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onExportZip={handleExportZip} exporting={exporting} exportProgress={exportProgress} includeImages={includeImages} onToggleIncludeImages={setIncludeImages} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} />
         </div>
       )}
 
       {view === 'preview' && (
         <>
-          <Preview items={canvasItems} onExportZip={handleExportZip} exporting={exporting} includeImages={includeImages} onToggleIncludeImages={setIncludeImages} />
+          <Preview items={canvasItems} onExportZip={handleExportZip} exporting={exporting} exportProgress={exportProgress} includeImages={includeImages} onToggleIncludeImages={setIncludeImages} />
           {canvasItems.length > 0 && (
             <div className="preview-project-bar">
               <button className="preview-save-btn" onClick={handleSaveProject}>

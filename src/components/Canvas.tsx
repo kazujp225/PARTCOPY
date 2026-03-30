@@ -18,13 +18,14 @@ interface Props {
   onViewTsx?: (sectionId: string) => void
   onExportZip?: () => void
   exporting?: boolean
+  exportProgress?: string | null
   includeImages?: boolean
   onToggleIncludeImages?: (v: boolean) => void
   onSaveProject?: () => void
   onNewProject?: () => void
 }
 
-export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, exporting, includeImages, onToggleIncludeImages, onSaveProject, onNewProject }: Props) {
+export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, exporting, exportProgress, includeImages, onToggleIncludeImages, onSaveProject, onNewProject }: Props) {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const dragRef = useRef<number | null>(null)
@@ -106,6 +107,12 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
                 <button className="zip-btn primary" onClick={onExportZip} disabled={exporting}>
                   {exporting ? '出力中...' : '\u2193 ZIP ダウンロード'}
                 </button>
+                {exporting && exportProgress && (
+                  <div className="export-progress">
+                    <span className="export-progress-spinner" />
+                    <span>{exportProgress}</span>
+                  </div>
+                )}
               </div>
             )}
             {editingIndex !== null && (

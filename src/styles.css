@@ -3957,6 +3957,41 @@ a.dash-link:hover {
   box-shadow: 0 4px 12px rgba(0,0,0,0.3);
 }
 
+/* Export progress indicator */
+.export-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, #1e1b4b, #312e81);
+  border: 1px solid #6366f1;
+  border-radius: 8px;
+  color: #c7d2fe;
+  font-size: 13px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  animation: export-fade-in 0.3s ease;
+}
+
+.export-progress-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #6366f1;
+  border-top-color: #c7d2fe;
+  border-radius: 50%;
+  animation: export-spin 0.8s linear infinite;
+}
+
+@keyframes export-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes export-fade-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* ============================================================
    Preview Project Bar & Project Gallery
    ============================================================ */

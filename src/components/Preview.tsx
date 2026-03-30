@@ -21,11 +21,12 @@ interface Props {
   items: CanvasItem[]
   onExportZip?: () => void
   exporting?: boolean
+  exportProgress?: string | null
   includeImages?: boolean
   onToggleIncludeImages?: (v: boolean) => void
 }
 
-export function Preview({ items, onExportZip, exporting, includeImages, onToggleIncludeImages }: Props) {
+export function Preview({ items, onExportZip, exporting, exportProgress, includeImages, onToggleIncludeImages }: Props) {
   const [mode, setMode] = useState<ViewMode>('merged')
   const [device, setDevice] = useState<DeviceMode>('desktop')
 
@@ -63,6 +64,12 @@ export function Preview({ items, onExportZip, exporting, includeImages, onToggle
             <button className="zip-btn primary" onClick={onExportZip} disabled={exporting}>
               {exporting ? '出力中...' : '↓ ZIP ダウンロード'}
             </button>
+            {exporting && exportProgress && (
+              <div className="export-progress">
+                <span className="export-progress-spinner" />
+                <span>{exportProgress}</span>
+              </div>
+            )}
           </div>
         )}
       </div>
