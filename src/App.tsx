@@ -45,7 +45,7 @@ export default function App() {
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const [tsxResult, setTsxResult] = useState<{ tsx: string; familyName?: string } | null>(null)
   const [exporting, setExporting] = useState(false)
-  const [exportProgress, setExportProgress] = useState<string | null>(null)
+  const [exportProgress, setExportProgress] = useState<{ message: string; current?: number; total?: number; sectionName?: string } | null>(null)
   const [includeImages, setIncludeImages] = useState(true)
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
   const [projectList, setProjectList] = useState<Array<{id: string; name: string; canvas_json: any[]; created_at: string}>>([])
@@ -538,24 +538,46 @@ export default function App() {
       }
       const sectionIds = validBlocks.map(c => c.sectionId)
 
-      // Check how many need TSX conversion
+      // Step 1: Pre-convert sections that don't have TSX yet
       const needConversion = validBlocks.filter(b => {
         const sec = sections.find(s => s.id === b.sectionId)
         return sec && !sec.tsx_code_storage_path
-      }).length
-      if (needConversion > 0) {
-        setExportProgress(`TSXに変換中... (${needConversion}パーツをClaudeが変換します)`)
-      } else {
-        setExportProgress('ZIP生成中...')
+      })
+
+      if (needConversion.length > 0) {
+        for (let i = 0; i < needConversion.length; i++) {
+          const block = needConversion[i]
+          const sec = sections.find(s => s.id === block.sectionId)
+          const familyName = sec?.block_family || 'section'
+          setExportProgress({
+            message: `TSXに変換中...`,
+            current: i + 1,
+            total: needConversion.length,
+            sectionName: familyName
+          })
+          try {
+            const convRes = await fetch(`/api/sections/${block.sectionId}/convert-tsx`, { method: 'POST' })
+            if (convRes.ok) {
+              // Mark as converted in local state
+              setSections(prev => prev.map(s =>
+                s.id === block.sectionId ? { ...s, tsx_code_storage_path: `${s.id}/component.tsx` } : s
+              ))
+            }
+          } catch {
+            // Conversion failed for this section, ZIP will use HTML fallback
+          }
+        }
       }
 
+      // Step 2: Generate ZIP (all sections now have TSX or will use fallback)
+      setExportProgress({ message: 'ZIP生成中...' })
       const res = await fetch('/api/export/zip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sectionIds, includeImages })
       })
       if (!res.ok) throw new Error('ZIP出力に失敗しました')
-      setExportProgress('ダウンロード準備中...')
+      setExportProgress({ message: 'ダウンロード準備中...' })
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')

@@ -1252,6 +1252,7 @@ body {
   min-height: 0;
   overflow-y: auto;
   background: var(--bg);
+  position: relative;
 }
 
 .canvas-empty {
@@ -2424,6 +2425,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
   background: var(--surface, #1a1a2e);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -3962,7 +3964,8 @@ a.dash-link:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
+  width: 100%;
+  margin-top: 4px;
   padding: 10px 16px;
   background: linear-gradient(135deg, #1e1b4b, #312e81);
   border: 1px solid #6366f1;
@@ -3990,6 +3993,82 @@ a.dash-link:hover {
 @keyframes export-fade-in {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Export overlay */
+.export-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(6px);
+  animation: export-fade-in 0.3s ease;
+}
+
+.export-overlay-card {
+  text-align: center;
+  background: linear-gradient(135deg, #1e1b4b, #1e293b);
+  border: 1px solid #4f46e5;
+  border-radius: 16px;
+  padding: 40px 48px;
+  min-width: 360px;
+  box-shadow: 0 8px 32px rgba(79, 70, 229, 0.3);
+}
+
+.export-overlay-spinner {
+  display: inline-block;
+  width: 48px;
+  height: 48px;
+  border: 3px solid #334155;
+  border-top-color: #818cf8;
+  border-radius: 50%;
+  animation: export-spin 0.8s linear infinite;
+  margin-bottom: 20px;
+}
+
+.export-overlay-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #e0e7ff;
+  margin: 0 0 16px;
+}
+
+.export-overlay-progress-bar {
+  width: 100%;
+  height: 8px;
+  background: #334155;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.export-overlay-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #818cf8);
+  border-radius: 4px;
+  transition: width 0.5s ease;
+}
+
+.export-overlay-detail {
+  font-size: 14px;
+  color: #c7d2fe;
+  margin: 0 0 6px;
+  font-weight: 500;
+}
+
+.export-overlay-estimate {
+  font-size: 12px;
+  color: #94a3b8;
+  margin: 0;
+}
+
+.export-overlay-sub {
+  font-size: 13px;
+  color: #94a3b8;
+  margin: 0;
 }
 
 /* ============================================================

@@ -21,7 +21,7 @@ interface Props {
   items: CanvasItem[]
   onExportZip?: () => void
   exporting?: boolean
-  exportProgress?: string | null
+  exportProgress?: { message: string; current?: number; total?: number; sectionName?: string } | null
   includeImages?: boolean
   onToggleIncludeImages?: (v: boolean) => void
 }
@@ -67,7 +67,7 @@ export function Preview({ items, onExportZip, exporting, exportProgress, include
             {exporting && exportProgress && (
               <div className="export-progress">
                 <span className="export-progress-spinner" />
-                <span>{exportProgress}</span>
+                <span>{exportProgress.message}{exportProgress.current != null && exportProgress.total != null && ` (${exportProgress.current}/${exportProgress.total})`}</span>
               </div>
             )}
           </div>

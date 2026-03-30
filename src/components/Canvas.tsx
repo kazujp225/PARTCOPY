@@ -18,7 +18,7 @@ interface Props {
   onViewTsx?: (sectionId: string) => void
   onExportZip?: () => void
   exporting?: boolean
-  exportProgress?: string | null
+  exportProgress?: { message: string; current?: number; total?: number; sectionName?: string } | null
   includeImages?: boolean
   onToggleIncludeImages?: (v: boolean) => void
   onSaveProject?: () => void
@@ -110,7 +110,7 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
                 {exporting && exportProgress && (
                   <div className="export-progress">
                     <span className="export-progress-spinner" />
-                    <span>{exportProgress}</span>
+                    <span>{exportProgress.message}{exportProgress.current != null && exportProgress.total != null && ` (${exportProgress.current}/${exportProgress.total})`}</span>
                   </div>
                 )}
               </div>
@@ -122,6 +122,34 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
             )}
           </div>
         </div>
+        {exporting && exportProgress && (
+          <div className="export-overlay">
+            <div className="export-overlay-card">
+              <div className="export-overlay-spinner" />
+              <p className="export-overlay-title">{exportProgress.message}</p>
+              {exportProgress.current != null && exportProgress.total != null && (
+                <>
+                  <div className="export-overlay-progress-bar">
+                    <div
+                      className="export-overlay-progress-fill"
+                      style={{ width: `${(exportProgress.current / exportProgress.total) * 100}%` }}
+                    />
+                  </div>
+                  <p className="export-overlay-detail">
+                    {exportProgress.current} / {exportProgress.total} パーツ
+                    {exportProgress.sectionName && <> &mdash; {exportProgress.sectionName}</>}
+                  </p>
+                  <p className="export-overlay-estimate">
+                    残り約 {Math.max(1, Math.ceil((exportProgress.total - exportProgress.current) * 0.5))}〜{(exportProgress.total - exportProgress.current) * 2} 分
+                  </p>
+                </>
+              )}
+              {!exportProgress.current && (
+                <p className="export-overlay-sub">{exportProgress.message === 'ZIP生成中...' ? 'アセットを収集しています...' : ''}</p>
+              )}
+            </div>
+          </div>
+        )}
         <div className="canvas-blocks">
           {items.map((item, i) => {
             const rk = refreshKeys[i] || 0
