@@ -21,6 +21,7 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
   const [query, setQuery] = useState('')
   const [sortBy, setSortBy] = useState<SortOption>('newest')
   const [limit, setLimit] = useState(60)
+  const [hasMore, setHasMore] = useState(false)
   const [onlyCta, setOnlyCta] = useState(false)
   const [onlyForm, setOnlyForm] = useState(false)
   const [onlyImages, setOnlyImages] = useState(false)
@@ -78,7 +79,9 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
       }
 
       const data = await response.json()
-      setSections(data.sections || [])
+      const fetchedSections = data.sections || []
+      setSections(fetchedSections)
+      setHasMore(fetchedSections.length >= limit)
     } catch (fetchError: any) {
       setSections([])
       setError(fetchError.message || 'ライブラリの取得に失敗しました')
@@ -294,6 +297,16 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
               </div>
             </div>
           ))}
+          {!loading && !error && hasMore && (
+            <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '16px 0' }}>
+              <button
+                className="inline-reset-btn"
+                onClick={() => setLimit(prev => prev + 60)}
+              >
+                さらに読み込む
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

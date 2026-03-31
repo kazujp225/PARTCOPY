@@ -788,60 +788,74 @@ async function getLibraryResults(filters: {
     return listLibrarySections(filters)
   }
 
+  const searchTerm = normalizeSearchValue(filters.q)
+  // Only over-fetch when text search is active (can't be done server-side)
+  const fetchLimit = searchTerm ? Math.min(filters.limit * 3, 500) : filters.limit
+
   let query = supabaseAdmin
     .from('source_sections')
     .select('*, source_sites!inner(normalized_domain, genre, tags, industry), source_pages(url, title)')
-    .order('created_at', { ascending: false })
-    .limit(Math.max(filters.limit * 3, 500))
 
   if (filters.genre) query = query.eq('source_sites.genre', filters.genre)
   if (filters.family) query = query.eq('block_family', filters.family)
   if (filters.industry) query = query.eq('source_sites.industry', filters.industry)
 
+  // Push feature filters into the DB query via JSONB containment
+  if (filters.hasCta) query = query.contains('features_jsonb', { hasCTA: true })
+  if (filters.hasForm) query = query.contains('features_jsonb', { hasForm: true })
+  if (filters.hasImages) query = query.contains('features_jsonb', { hasImages: true })
+
+  // Apply sort at DB level when possible
+  switch (filters.sort) {
+    case 'confidence':
+      query = query.order('classifier_confidence', { ascending: false })
+      break
+    case 'family':
+      query = query.order('block_family', { ascending: true })
+      break
+    case 'oldest':
+      query = query.order('created_at', { ascending: true })
+      break
+    case 'newest':
+    default:
+      query = query.order('created_at', { ascending: false })
+      break
+  }
+
+  query = query.limit(fetchLimit)
+
   const { data, error } = await query
   if (error) throw new Error(error.message)
 
-  const searchTerm = normalizeSearchValue(filters.q)
-  let results = (data || []).filter((section: any) => {
-    const featureFlags = section.features_jsonb || {}
+  let results = data || []
 
-    if (filters.hasCta && !featureFlags.hasCTA) return false
-    if (filters.hasForm && !featureFlags.hasForm) return false
-    if (filters.hasImages && !featureFlags.hasImages) return false
-    if (!searchTerm) return true
+  // Client-side text search (only when search term is present)
+  if (searchTerm) {
+    results = results.filter((section: any) => {
+      const searchable = [
+        section.block_family,
+        section.block_variant,
+        section.text_summary,
+        section.source_sites?.normalized_domain,
+        section.source_sites?.genre,
+        ...(section.source_sites?.tags || []),
+        section.source_pages?.title,
+        section.source_pages?.url
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
 
-    const searchable = [
-      section.block_family,
-      section.block_variant,
-      section.text_summary,
-      section.source_sites?.normalized_domain,
-      section.source_sites?.genre,
-      ...(section.source_sites?.tags || []),
-      section.source_pages?.title,
-      section.source_pages?.url
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
+      return searchable.includes(searchTerm)
+    })
+  }
 
-    return searchable.includes(searchTerm)
-  })
-
-  results.sort((a: any, b: any) => {
-    switch (filters.sort) {
-      case 'confidence':
-        return (b.classifier_confidence || 0) - (a.classifier_confidence || 0)
-      case 'family':
-        return String(a.block_family || '').localeCompare(String(b.block_family || ''))
-      case 'source':
-        return String(a.source_sites?.normalized_domain || '').localeCompare(String(b.source_sites?.normalized_domain || ''))
-      case 'oldest':
-        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-      case 'newest':
-      default:
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    }
-  })
+  // For 'source' sort, we need client-side sorting since it's on a joined field
+  if (filters.sort === 'source') {
+    results.sort((a: any, b: any) =>
+      String(a.source_sites?.normalized_domain || '').localeCompare(String(b.source_sites?.normalized_domain || ''))
+    )
+  }
 
   return results.slice(0, filters.limit)
 }
@@ -1443,6 +1457,26 @@ app.get('/api/library/families', async (req, res) => {
 })
 
 // ============================================================
+// Library: Total section count
+// ============================================================
+app.get('/api/library/count', async (_req, res) => {
+  try {
+    if (HAS_SUPABASE) {
+      const { count, error } = await supabaseAdmin
+        .from('source_sections')
+        .select('id', { count: 'exact', head: true })
+      if (error) throw new Error(error.message)
+      res.json({ count: count || 0 })
+    } else {
+      const sections = await listLibrarySections({ limit: 100000, sort: 'newest' })
+      res.json({ count: sections.length })
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+// ============================================================
 // Block variants
 // ============================================================
 app.get('/api/block-variants', async (req, res) => {
@@ -1473,6 +1507,64 @@ app.delete('/api/library/:id', async (req, res) => {
     // Clean orphaned references from all projects' canvas_json
     await cleanCanvasRefsForDeletedSection(req.params.id)
     res.json({ ok: true })
+  } catch (err: any) {
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+// ============================================================
+// Dedup: Remove duplicate sections (same text_summary prefix per site)
+// ============================================================
+app.post('/api/dedup-sections', async (req, res) => {
+  try {
+    if (!HAS_SUPABASE) {
+      res.status(501).json({ error: 'Dedup is only supported with Supabase' })
+      return
+    }
+
+    // Fetch all sections grouped by site_id, ordered by order_index
+    const { data: allSections, error } = await supabaseAdmin
+      .from('source_sections')
+      .select('id, site_id, text_summary, order_index')
+      .order('order_index', { ascending: true })
+
+    if (error) throw new Error(error.message)
+
+    // Group by site_id, find duplicates by first 200 chars of text_summary
+    const toDelete: string[] = []
+    const bySite = new Map<string, typeof allSections>()
+
+    for (const section of allSections || []) {
+      const siteId = section.site_id
+      if (!bySite.has(siteId)) bySite.set(siteId, [])
+      bySite.get(siteId)!.push(section)
+    }
+
+    for (const [, sections] of bySite) {
+      const seen = new Set<string>()
+      for (const section of sections) {
+        const key = (section.text_summary || '').slice(0, 200).trim()
+        if (key.length === 0) continue
+        if (seen.has(key)) {
+          toDelete.push(section.id)
+        } else {
+          seen.add(key)
+        }
+      }
+    }
+
+    // Delete duplicates in batches
+    const BATCH = 100
+    for (let i = 0; i < toDelete.length; i += BATCH) {
+      const batch = toDelete.slice(i, i + BATCH)
+      const { error: delError } = await supabaseAdmin
+        .from('source_sections')
+        .delete()
+        .in('id', batch)
+      if (delError) throw new Error(delError.message)
+    }
+
+    res.json({ deleted: toDelete.length })
   } catch (err: any) {
     res.status(500).json({ error: safeErrorMessage(err) })
   }
@@ -3242,6 +3334,198 @@ app.delete('/api/projects/:id', async (req, res) => {
     res.json({ deleted: true })
   } catch (err: any) {
     res.status(500).json({ error: err.message })
+  }
+})
+
+// ============================================================
+// Fast Crawl (bulk high-concurrency)
+// ============================================================
+import { fastCrawlUrls, getFastCrawlStats } from './fast-crawler.js'
+
+app.post('/api/fast-crawl', async (req, res) => {
+  const { urls } = req.body
+  if (!Array.isArray(urls) || urls.length === 0) {
+    res.status(400).json({ error: 'urls must be a non-empty array' })
+    return
+  }
+
+  const validUrls = urls
+    .map((u: any) => typeof u === 'string' ? u.trim() : '')
+    .filter((u: string) => u.length > 0 && /^https?:\/\//i.test(u))
+
+  if (validUrls.length === 0) {
+    res.status(400).json({ error: 'No valid URLs provided' })
+    return
+  }
+
+  logger.info('Fast-crawl API: starting', { count: validUrls.length })
+
+  // Run async, return immediately
+  const jobId = `fast-${Date.now()}`
+  res.json({
+    jobId,
+    message: `${validUrls.length}件のクロールを開始しました`,
+    count: validUrls.length,
+  })
+
+  // Process in background
+  fastCrawlUrls(validUrls)
+    .then(result => {
+      logger.info('Fast-crawl API: complete', { jobId, ...result })
+    })
+    .catch(err => {
+      logger.error('Fast-crawl API: failed', { jobId, error: err.message })
+    })
+})
+
+app.get('/api/fast-crawl/stats', async (_req, res) => {
+  const stats = getFastCrawlStats()
+  res.json(stats)
+})
+
+// ============================================================
+// Claude Reclassification (local CLI)
+// ============================================================
+import { reclassifySections } from './claude-classifier.js'
+
+app.post('/api/reclassify', async (req, res) => {
+  const { siteId, limit } = req.body || {}
+  logger.info('Reclassify: starting', { siteId, limit })
+
+  res.json({ message: '再分類を開始しました', status: 'running' })
+
+  // Run in background
+  reclassifySections({ siteId, limit: limit || 500 })
+    .then(result => {
+      logger.info('Reclassify: complete', result)
+    })
+    .catch(err => {
+      logger.error('Reclassify: failed', { error: err.message })
+    })
+})
+
+app.get('/api/reclassify/status', async (_req, res) => {
+  // Quick check: count sections by family
+  if (!HAS_SUPABASE) {
+    res.json({ families: {} })
+    return
+  }
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('source_sections')
+      .select('block_family')
+    if (error) throw new Error(error.message)
+
+    const counts: Record<string, number> = {}
+    for (const row of (data || [])) {
+      const f = row.block_family || 'unknown'
+      counts[f] = (counts[f] || 0) + 1
+    }
+    res.json({ families: counts, total: data?.length || 0 })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ============================================================
+// Gemini Design Edit
+// ============================================================
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ''
+
+app.post('/api/gemini/design-edit', async (req, res) => {
+  if (!GEMINI_API_KEY) {
+    res.status(500).json({ error: 'GEMINI_API_KEY が設定されていません' })
+    return
+  }
+
+  const { html, prompt, sectionId } = req.body
+  if (!html || !prompt) {
+    res.status(400).json({ error: 'html と prompt は必須です' })
+    return
+  }
+
+  // Rate limit per sectionId
+  const rlKey = `gemini:${sectionId || 'global'}`
+  if (!rateLimit(rlKey, 10, 60_000)) {
+    res.status(429).json({ error: 'レート制限中です。少し待ってから再試行してください。' })
+    return
+  }
+
+  try {
+    const systemPrompt = `あなたはWebデザインの専門家です。ユーザーから渡されるHTMLセクションのデザインを、指示に従って修正してください。
+
+ルール：
+- HTMLの構造（タグ、クラス名、ID）はできるだけ維持してください
+- style属性やinline CSSを変更・追加してデザインを修正してください
+- <style>タグ内のCSSも修正できます
+- テキスト内容は変更しないでください（デザインのみ変更）
+- 画像のsrcは変更しないでください
+- レスポンシブデザインを意識してください
+- 修正後の完全なHTMLを返してください
+
+回答フォーマット：
+必ず以下のJSON形式で返してください。他のテキストは含めないでください。
+{"html": "修正後のHTML全体", "explanation": "変更内容の日本語での説明"}`
+
+    const requestBody = {
+      contents: [{
+        parts: [{
+          text: `${systemPrompt}\n\n--- 現在のHTML ---\n${html.slice(0, 100000)}\n\n--- 変更指示 ---\n${prompt}`
+        }]
+      }],
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 65536,
+        responseMimeType: 'application/json'
+      }
+    }
+
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
+      }
+    )
+
+    if (!geminiRes.ok) {
+      const errText = await geminiRes.text()
+      logger.error('Gemini API error', { status: geminiRes.status, body: errText.slice(0, 500) })
+      throw new Error(`Gemini API エラー (${geminiRes.status})`)
+    }
+
+    const geminiData = await geminiRes.json() as any
+    const textContent = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text
+    if (!textContent) {
+      throw new Error('Gemini からの応答が空です')
+    }
+
+    // Parse the JSON response
+    let parsed: { html?: string; explanation?: string }
+    try {
+      parsed = JSON.parse(textContent)
+    } catch {
+      // Try to extract JSON from the response
+      const jsonMatch = textContent.match(/\{[\s\S]*"html"[\s\S]*\}/)
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0])
+      } else {
+        throw new Error('Gemini の応答をパースできませんでした')
+      }
+    }
+
+    if (!parsed.html) {
+      throw new Error('Gemini の応答にHTMLが含まれていません')
+    }
+
+    res.json({
+      html: parsed.html,
+      explanation: parsed.explanation || 'デザインを変更しました。'
+    })
+  } catch (err: any) {
+    logger.error('Gemini design edit failed', { error: err.message })
+    res.status(500).json({ error: err.message || 'Gemini API 呼び出しに失敗しました' })
   }
 })
 

@@ -38,6 +38,7 @@ import { canonicalizeSection } from './canonicalizer.js'
 import { parseSectionDOM } from './dom-parser.js'
 import { logger } from './logger.js'
 import { startAutoCrawler } from './auto-crawler.js'
+import { startFastCrawler } from './fast-crawler.js'
 
 const WORKER_ID = `worker-${process.pid}`
 const POLL_INTERVAL = 3000
@@ -912,3 +913,8 @@ pollLoop()
 
 // 常にauto-crawlerを起動（キューファイルがあれば処理、なければ待機）
 startAutoCrawler()
+
+// 高速クローラーも起動（同じキューファイルを使用、fetch+cheerioで高速処理）
+if (process.env.FAST_CRAWL === '1' || process.env.FAST_CRAWL === 'true') {
+  startFastCrawler()
+}

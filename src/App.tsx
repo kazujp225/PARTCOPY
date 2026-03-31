@@ -7,6 +7,7 @@ import { Preview } from './components/Preview'
 import { Library } from './components/Library'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { TsxModal } from './components/TsxModal'
+import { GeminiDesignEditor } from './components/GeminiDesignEditor'
 import { Dashboard } from './components/Dashboard'
 import { FAMILY_COLORS, FAMILY_LABELS, FAMILY_ICONS } from './constants'
 import './styles.css'
@@ -44,6 +45,8 @@ export default function App() {
   const [view, setViewState] = useState<View>(loadActiveView)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const [tsxResult, setTsxResult] = useState<{ tsx: string; familyName?: string } | null>(null)
+  const [designEditTarget, setDesignEditTarget] = useState<{ sectionId: string; familyName?: string } | null>(null)
+  const [designEditedSections, setDesignEditedSections] = useState<Record<string, number>>({})
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState<{ message: string; current?: number; total?: number; sectionName?: string; estimate?: string } | null>(null)
   const [includeImages, setIncludeImages] = useState(true)
@@ -69,6 +72,7 @@ export default function App() {
   const [saveToast, setSaveToast] = useState<{ projectId: string; projectName: string } | null>(null)
   const [lastCrawlSections, setLastCrawlSections] = useState<SourceSection[]>([])
   const [lastCrawlNewCount, setLastCrawlNewCount] = useState(0)
+  const [totalStockCount, setTotalStockCount] = useState(0)
 
   const [saveError, setSaveError] = useState<string | null>(null)
 
@@ -181,6 +185,19 @@ export default function App() {
       .catch((err: any) => { setSaveError(err?.message || 'ライブラリの読み込みに失敗しました') })
   }, [])
 
+  // Fetch total stock count and auto-refresh every 15s
+  useEffect(() => {
+    const fetchCount = () => {
+      fetch('/api/library/count')
+        .then(r => r.ok ? r.json() : { count: 0 })
+        .then(d => setTotalStockCount(d.count || 0))
+        .catch(() => {})
+    }
+    fetchCount()
+    const interval = setInterval(fetchCount, 15_000)
+    return () => clearInterval(interval)
+  }, [])
+
   // Validate canvas on load: remove blocks whose sectionId no longer exists
   const canvasCleanedRef = useRef(false)
   useEffect(() => {
@@ -247,20 +264,19 @@ export default function App() {
 
     setCrawlSubmitting(true)
     try {
-      const res = await fetch('/api/crawl-queue', {
+      // Use fast-crawl for high-speed bulk processing
+      const res = await fetch('/api/fast-crawl', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ urls })
       })
       if (res.ok) {
         const data = await res.json()
-        setCrawlQueueCount(data.queue?.length || 0)
-        setCrawlDoneCount(data.done?.length || 0)
-        setCrawlActive(data.active || false)
+        setCrawlActive(true)
         setCrawlUrls('')
       }
     } catch (err: any) {
-      setSaveError(err?.message || 'クロールキューへの追加に失敗しました')
+      setSaveError(err?.message || 'クロール開始に失敗しました')
     }
     setCrawlSubmitting(false)
   }, [crawlUrls])
@@ -749,7 +765,7 @@ export default function App() {
         </div>
 
         <div className="sidebar-total">
-          <span className="sidebar-total-num">{sections.length}</span>
+          <span className="sidebar-total-num">{totalStockCount || sections.length}</span>
           <span className="sidebar-total-label">DESIGN STOCK</span>
         </div>
 
@@ -955,7 +971,7 @@ export default function App() {
       {view === 'editor' && (
         <div className="editor-layout">
           <PartsPanel sections={filteredSections} onAdd={addToCanvas} onRemove={removeSection} onViewTsx={handleViewTsx} />
-          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onExportZip={handleExportZip} exporting={exporting} exportProgress={exportProgress} includeImages={includeImages} onToggleIncludeImages={setIncludeImages} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} />
+          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onDesignEdit={(sectionId, familyName) => setDesignEditTarget({ sectionId, familyName })} onExportZip={handleExportZip} exporting={exporting} exportProgress={exportProgress} includeImages={includeImages} onToggleIncludeImages={setIncludeImages} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} designEditedSections={designEditedSections} />
         </div>
       )}
 
@@ -1024,6 +1040,20 @@ export default function App() {
           tsx={tsxResult.tsx}
           familyName={tsxResult.familyName}
           onClose={() => setTsxResult(null)}
+        />
+      )}
+
+      {designEditTarget && (
+        <GeminiDesignEditor
+          sectionId={designEditTarget.sectionId}
+          familyName={designEditTarget.familyName}
+          onClose={() => setDesignEditTarget(null)}
+          onSaved={() => {
+            setDesignEditedSections(prev => ({
+              ...prev,
+              [designEditTarget!.sectionId]: (prev[designEditTarget!.sectionId] || 0) + 1
+            }))
+          }}
         />
       )}
 

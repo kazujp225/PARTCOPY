@@ -16,6 +16,7 @@ interface Props {
   onRemove: (canvasId: string) => void
   onMove: (from: number, to: number) => void
   onViewTsx?: (sectionId: string) => void
+  onDesignEdit?: (sectionId: string, familyName?: string) => void
   onExportZip?: () => void
   exporting?: boolean
   exportProgress?: { message: string; current?: number; total?: number; sectionName?: string; estimate?: string } | null
@@ -23,9 +24,10 @@ interface Props {
   onToggleIncludeImages?: (v: boolean) => void
   onSaveProject?: () => void
   onNewProject?: () => void
+  designEditedSections?: Record<string, number>
 }
 
-export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, exporting, exportProgress, includeImages, onToggleIncludeImages, onSaveProject, onNewProject }: Props) {
+export function Canvas({ items, onRemove, onMove, onViewTsx, onDesignEdit, onExportZip, exporting, exportProgress, includeImages, onToggleIncludeImages, onSaveProject, onNewProject, designEditedSections }: Props) {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const dragRef = useRef<number | null>(null)
@@ -149,7 +151,8 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
         )}
         <div className="canvas-blocks">
           {items.map((item, i) => {
-            const rk = refreshKeys[i] || 0
+            const sectionDesignKey = designEditedSections?.[item.section.id] || 0
+            const rk = (refreshKeys[i] || 0) + sectionDesignKey
             const htmlUrlWithKey = item.section.htmlUrl
               ? `${item.section.htmlUrl}${item.section.htmlUrl.includes('?') ? '&' : '?'}v=${rk}`
               : item.section.htmlUrl
@@ -185,6 +188,11 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
                     {item.section.source_sites?.normalized_domain || ''}
                   </span>
                   <div className="canvas-block-actions">
+                    {onDesignEdit && (
+                      <button className="design-edit-btn" onClick={() => onDesignEdit(item.section.id, item.section.block_family)} title="Geminiデザイン編集">
+                        Design
+                      </button>
+                    )}
                     {item.section.tsx_code_storage_path && onViewTsx && (
                       <button className="tsx-btn" onClick={() => onViewTsx(item.section.id)} title="TSXコード表示">
                         TSX
@@ -217,7 +225,7 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onExportZip, export
                       sectionId={item.section.id}
                       onNodeSelect={handleNodeSelect}
                     />
-                  ) : item.section.thumbnail_storage_path ? (
+                  ) : item.section.thumbnail_storage_path && !sectionDesignKey ? (
                     <img
                       className="canvas-block-thumb"
                       src={`/assets/${item.section.thumbnail_storage_path}`}
