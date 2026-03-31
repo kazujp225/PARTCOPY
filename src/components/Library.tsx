@@ -36,7 +36,7 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [sortBy, setSortBy] = useState<SortOption>('newest')
-  const [limit, setLimit] = useState(60)
+  const [limit, setLimit] = useState(24)
   const [hasMore, setHasMore] = useState(false)
   const [onlyCta, setOnlyCta] = useState(false)
   const [onlyForm, setOnlyForm] = useState(false)
@@ -151,7 +151,7 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
     onlyForm ||
     onlyImages ||
     sortBy !== 'newest' ||
-    limit !== 60
+    limit !== 24
   )
 
   return (
@@ -274,17 +274,18 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
               <div className="library-card-thumb">
                 {section.thumbnail_storage_path ? (
                   <img src={`/assets/${section.thumbnail_storage_path}`} alt={section.block_family} loading="lazy" />
-                ) : hoveredId === section.id && section.htmlUrl ? (
-                  <div className="library-card-live">
-                    <SourcePreviewFrame htmlUrl={section.htmlUrl} maxHeight={300} />
-                  </div>
+                ) : section.htmlUrl ? (
+                  <LazyVisible height={200}>
+                    <div className="library-card-live">
+                      <SourcePreviewFrame htmlUrl={section.htmlUrl} maxHeight={300} />
+                    </div>
+                  </LazyVisible>
                 ) : (
                   <div className="library-card-placeholder" style={{ borderTop: `4px solid ${FAMILY_COLORS[section.block_family] || '#94a3b8'}` }}>
                     <span className="library-card-placeholder-family" style={{ color: FAMILY_COLORS[section.block_family] || '#94a3b8' }}>
                       {familyLabelMap[section.block_family] || section.block_family}
                     </span>
                     <span className="library-card-placeholder-domain">{section.source_sites?.normalized_domain || ''}</span>
-                    {section.text_summary && <p className="library-card-placeholder-text">{section.text_summary.slice(0, 80)}</p>}
                   </div>
                 )}
                 <div className="library-card-category">
