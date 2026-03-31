@@ -2020,6 +2020,37 @@ body {
   font-weight: 700;
 }
 
+.library-card-placeholder {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 6px;
+  height: 180px;
+  padding: 20px;
+  background: linear-gradient(135deg, #fafafa 0%, #f0f0f0 100%);
+}
+.library-card-placeholder-family {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.library-card-placeholder-domain {
+  font-size: 11px;
+  color: #999;
+  font-weight: 500;
+}
+.library-card-placeholder-text {
+  font-size: 12px;
+  color: #777;
+  line-height: 1.5;
+  margin: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
 .library-card-category {
   position: absolute;
   top: 8px;

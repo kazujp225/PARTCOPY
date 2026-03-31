@@ -64,7 +64,22 @@ export function Dashboard({ sections, canvas, onNavigate, onExtract, extractLoad
     } catch {}
   }
 
-  const totalParts = sections.length
+  // Fetch real counts from API instead of computing from limited sections array
+  const [totalParts, setTotalParts] = useState(sections.length)
+  const [siteCount, setSiteCount] = useState(0)
+  const [familyCountsApi, setFamilyCountsApi] = useState<Array<{key: string; count: number}>>([])
+
+  useEffect(() => {
+    fetch('/api/library/count').then(r => r.json()).then(d => setTotalParts(d.count || 0)).catch(() => {})
+    fetch('/api/library/families').then(r => r.json()).then(d => {
+      const fams = d.families || []
+      setFamilyCountsApi(fams.filter((f: any) => f.count > 0))
+    }).catch(() => {})
+    fetch('/api/sites/count').then(r => r.json()).then(d => {
+      setSiteCount(d.count || 0)
+    }).catch(() => {})
+  }, [])
+
   const families = new Map<string, number>()
   const sites = new Map<string, number>()
   const recentSections = new Map<string, { count: number; domain: string; latest: string }>()
@@ -87,7 +102,9 @@ export function Dashboard({ sections, canvas, onNavigate, onExtract, extractLoad
     }
   })
 
-  const topFamilies = [...families.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)
+  const topFamilies = familyCountsApi.length > 0
+    ? familyCountsApi.sort((a, b) => b.count - a.count).slice(0, 10).map(f => [f.key, f.count] as [string, number])
+    : [...families.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)
   const topSites = [...sites.entries()].sort((a, b) => b[1] - a[1])
   const recentSites = [...recentSections.values()]
     .sort((a, b) => b.latest.localeCompare(a.latest))
@@ -120,11 +137,11 @@ export function Dashboard({ sections, canvas, onNavigate, onExtract, extractLoad
             <span>Design Stock</span>
           </div>
           <div className="dash-hero-stat">
-            <strong>{sites.size}</strong>
+            <strong>{siteCount || sites.size}</strong>
             <span>Sites</span>
           </div>
           <div className="dash-hero-stat">
-            <strong>{families.size}</strong>
+            <strong>{familyCountsApi.length || families.size}</strong>
             <span>Categories</span>
           </div>
         </div>

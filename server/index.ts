@@ -790,44 +790,53 @@ async function getLibraryResults(filters: {
 
   const searchTerm = normalizeSearchValue(filters.q)
   // Only over-fetch when text search is active (can't be done server-side)
-  const fetchLimit = searchTerm ? Math.min(filters.limit * 3, 500) : filters.limit
+  const fetchLimit = searchTerm ? Math.min(filters.limit * 3, 5000) : filters.limit
 
-  let query = supabaseAdmin
-    .from('source_sections')
-    .select('*, source_sites!inner(normalized_domain, genre, tags, industry), source_pages(url, title)')
+  // Build a fresh query for each page (Supabase query builder is mutable)
+  function buildQuery() {
+    let q = supabaseAdmin
+      .from('source_sections')
+      .select('*, source_sites!inner(normalized_domain, genre, tags, industry), source_pages(url, title)')
 
-  if (filters.genre) query = query.eq('source_sites.genre', filters.genre)
-  if (filters.family) query = query.eq('block_family', filters.family)
-  if (filters.industry) query = query.eq('source_sites.industry', filters.industry)
+    if (filters.genre) q = q.eq('source_sites.genre', filters.genre)
+    if (filters.family) q = q.eq('block_family', filters.family)
+    if (filters.industry) q = q.eq('source_sites.industry', filters.industry)
 
-  // Push feature filters into the DB query via JSONB containment
-  if (filters.hasCta) query = query.contains('features_jsonb', { hasCTA: true })
-  if (filters.hasForm) query = query.contains('features_jsonb', { hasForm: true })
-  if (filters.hasImages) query = query.contains('features_jsonb', { hasImages: true })
+    if (filters.hasCta) q = q.contains('features_jsonb', { hasCTA: true })
+    if (filters.hasForm) q = q.contains('features_jsonb', { hasForm: true })
+    if (filters.hasImages) q = q.contains('features_jsonb', { hasImages: true })
 
-  // Apply sort at DB level when possible
-  switch (filters.sort) {
-    case 'confidence':
-      query = query.order('classifier_confidence', { ascending: false })
-      break
-    case 'family':
-      query = query.order('block_family', { ascending: true })
-      break
-    case 'oldest':
-      query = query.order('created_at', { ascending: true })
-      break
-    case 'newest':
-    default:
-      query = query.order('created_at', { ascending: false })
-      break
+    switch (filters.sort) {
+      case 'confidence':
+        q = q.order('classifier_confidence', { ascending: false })
+        break
+      case 'family':
+        q = q.order('block_family', { ascending: true })
+        break
+      case 'oldest':
+        q = q.order('created_at', { ascending: true })
+        break
+      case 'newest':
+      default:
+        q = q.order('created_at', { ascending: false })
+        break
+    }
+    return q
   }
 
-  query = query.limit(fetchLimit)
-
-  const { data, error } = await query
-  if (error) throw new Error(error.message)
-
-  let results = data || []
+  // Supabase returns max 1000 rows per request — paginate to fetch all
+  const PAGE_SIZE = 1000
+  let results: any[] = []
+  let from = 0
+  while (from < fetchLimit) {
+    const batchSize = Math.min(PAGE_SIZE, fetchLimit - from)
+    const { data, error } = await buildQuery().range(from, from + batchSize - 1)
+    if (error) throw new Error(error.message)
+    if (!data || data.length === 0) break
+    results = results.concat(data)
+    if (data.length < batchSize) break
+    from += batchSize
+  }
 
   // Client-side text search (only when search term is present)
   if (searchTerm) {
@@ -865,24 +874,32 @@ async function getGenreResults() {
     return getGenreSummary()
   }
 
-  const { data, error } = await supabaseAdmin
-    .from('source_sections')
-    .select('source_sites!inner(genre)')
+  // Get unique genres from source_sites, then count sections per site's genre
+  const { data: sites, error } = await supabaseAdmin
+    .from('source_sites')
+    .select('id, genre')
 
   if (error) throw new Error(error.message)
 
-  const counts: Record<string, number> = {}
-  for (const row of data || []) {
-    const sites = Array.isArray(row.source_sites) ? row.source_sites : [row.source_sites]
-    for (const site of sites) {
-      const genre = site?.genre || 'untagged'
-      counts[genre] = (counts[genre] || 0) + 1
-    }
+  // Count sections per site using exact counts
+  const genreSitesMap: Record<string, string[]> = {}
+  for (const site of sites || []) {
+    const genre = site.genre || 'untagged'
+    if (!genreSitesMap[genre]) genreSitesMap[genre] = []
+    genreSitesMap[genre].push(site.id)
   }
 
-  return Object.entries(counts)
-    .map(([genre, count]) => ({ genre, count }))
-    .sort((a, b) => b.count - a.count)
+  const results = await Promise.all(
+    Object.entries(genreSitesMap).map(async ([genre, siteIds]) => {
+      const { count, error: cErr } = await supabaseAdmin
+        .from('source_sections')
+        .select('id', { count: 'exact', head: true })
+        .in('site_id', siteIds)
+      return { genre, count: (!cErr && count != null) ? count : 0 }
+    })
+  )
+
+  return results.filter(r => r.count > 0).sort((a, b) => b.count - a.count)
 }
 
 async function getFamilyResults() {
@@ -890,25 +907,24 @@ async function getFamilyResults() {
     return getFamilySummary()
   }
 
-  const [{ data: families, error }, { data: sections, error: countsError }] = await Promise.all([
-    supabaseAdmin
-      .from('block_families')
-      .select('key, label, label_ja, sort_order')
-      .order('sort_order'),
-    supabaseAdmin
-      .from('source_sections')
-      .select('block_family')
-  ])
+  const { data: families, error } = await supabaseAdmin
+    .from('block_families')
+    .select('key, label, label_ja, sort_order')
+    .order('sort_order')
 
-  if (error || countsError) {
-    throw new Error(error?.message || countsError?.message || 'Failed to load families')
+  if (error) {
+    throw new Error(error.message)
   }
 
-  const counts = (sections || []).reduce((acc: Record<string, number>, row: any) => {
-    const familyKey = row.block_family || 'content'
-    acc[familyKey] = (acc[familyKey] || 0) + 1
-    return acc
-  }, {})
+  // Count per family using individual count queries (avoids 1000-row default limit)
+  const counts: Record<string, number> = {}
+  await Promise.all((families || []).map(async (f: any) => {
+    const { count, error: cErr } = await supabaseAdmin
+      .from('source_sections')
+      .select('id', { count: 'exact', head: true })
+      .eq('block_family', f.key)
+    if (!cErr && count != null) counts[f.key] = count
+  }))
 
   return (families || []).map((family: any) => ({
     ...family,
@@ -1408,7 +1424,7 @@ app.get('/api/library', async (req, res) => {
     hasImages
   } = req.query
 
-  const limit = Math.min(Math.max(Number(lim) || 60, 1), 200)
+  const limit = Math.min(Math.max(Number(lim) || 60, 1), 5000)
   try {
     const results = await getLibraryResults({
       genre: typeof genre === 'string' ? genre : undefined,
@@ -1470,6 +1486,25 @@ app.get('/api/library/count', async (_req, res) => {
     } else {
       const sections = await listLibrarySections({ limit: 100000, sort: 'newest' })
       res.json({ count: sections.length })
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+// ============================================================
+// Sites count
+// ============================================================
+app.get('/api/sites/count', async (_req, res) => {
+  try {
+    if (HAS_SUPABASE) {
+      const { count, error } = await supabaseAdmin
+        .from('source_sites')
+        .select('id', { count: 'exact', head: true })
+      if (error) throw new Error(error.message)
+      res.json({ count: count || 0 })
+    } else {
+      res.json({ count: 0 })
     }
   } catch (err: any) {
     res.status(500).json({ error: safeErrorMessage(err) })

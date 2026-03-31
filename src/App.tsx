@@ -164,9 +164,9 @@ export default function App() {
       })
   }, [])
 
-  // Load all sections from library on mount
+  // Load recent sections from library on mount (lightweight — full browsing is in Library view)
   useEffect(() => {
-    fetch('/api/library?limit=500&sort=newest')
+    fetch('/api/library?limit=200&sort=newest')
       .then(r => r.ok ? r.json() : { sections: [] })
       .then(data => {
         const libSections: SourceSection[] = data.sections || []
@@ -341,15 +341,25 @@ export default function App() {
       .filter((domain): domain is string => Boolean(domain))
   ).size
 
-  // Category counts for sidebar (STOCK DESIGN style)
-  const familyCounts = useMemo(() => {
-    const counts: Record<string, number> = {}
-    sections.forEach(s => {
-      const fam = s.block_family || 'content'
-      counts[fam] = (counts[fam] || 0) + 1
-    })
-    return counts
-  }, [sections])
+  // Category counts for sidebar — fetched from API (not computed from loaded sections)
+  const [familyCounts, setFamilyCounts] = useState<Record<string, number>>({})
+  useEffect(() => {
+    const fetchFamilyCounts = () => {
+      fetch('/api/library/families')
+        .then(r => r.ok ? r.json() : { families: [] })
+        .then(d => {
+          const counts: Record<string, number> = {}
+          for (const f of (d.families || [])) {
+            counts[f.key] = f.count || 0
+          }
+          setFamilyCounts(counts)
+        })
+        .catch(() => {})
+    }
+    fetchFamilyCounts()
+    const interval = setInterval(fetchFamilyCounts, 15_000)
+    return () => clearInterval(interval)
+  }, [])
 
   const stopPolling = () => {
     if (pollRef.current) {
@@ -813,7 +823,7 @@ export default function App() {
           >
             <span className="sidebar-cat-icon">&#9733;</span>
             <span className="sidebar-cat-name">すべて</span>
-            <span className="sidebar-cat-count">{sections.length}</span>
+            <span className="sidebar-cat-count">{totalStockCount || sections.length}</span>
           </button>
           {Object.entries(familyCounts)
             .sort((a, b) => b[1] - a[1])

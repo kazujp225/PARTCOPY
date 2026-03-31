@@ -1,7 +1,23 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useState, useRef } from 'react'
 import { SourceSection, GenreInfo, BlockFamilyInfo } from '../types'
 import { FAMILY_COLORS, FAMILY_LABELS } from '../constants'
 import { SourcePreviewFrame } from './SourcePreviewFrame'
+
+/** Lazy-load wrapper: only renders children when the element scrolls into view */
+function LazyVisible({ children, height = 200 }: { children: React.ReactNode; height?: number }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [visible, setVisible] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const io = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) { setVisible(true); io.disconnect() }
+    }, { rootMargin: '200px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [])
+  return <div ref={ref} style={{ minHeight: visible ? undefined : height }}>{visible ? children : null}</div>
+}
 
 type SortOption = 'newest' | 'confidence' | 'family' | 'source'
 
@@ -199,6 +215,8 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
               <option value="24">24件</option>
               <option value="60">60件</option>
               <option value="120">120件</option>
+              <option value="500">500件</option>
+              <option value="1000">1000件</option>
             </select>
           </div>
 
@@ -254,17 +272,19 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
               onMouseLeave={() => setHoveredId(null)}
             >
               <div className="library-card-thumb">
-                {hoveredId === section.id && section.htmlUrl ? (
+                {section.thumbnail_storage_path ? (
+                  <img src={`/assets/${section.thumbnail_storage_path}`} alt={section.block_family} loading="lazy" />
+                ) : hoveredId === section.id && section.htmlUrl ? (
                   <div className="library-card-live">
                     <SourcePreviewFrame htmlUrl={section.htmlUrl} maxHeight={300} />
                   </div>
-                ) : section.thumbnail_storage_path ? (
-                  <img src={`/assets/${section.thumbnail_storage_path}`} alt={section.block_family} loading="lazy" />
                 ) : (
-                  <div className="library-card-no-thumb">
-                    <span className="library-card-no-thumb-icon" style={{ color: FAMILY_COLORS[section.block_family] || '#94a3b8' }}>
-                      {FAMILY_LABELS[section.block_family] || section.block_family}
+                  <div className="library-card-placeholder" style={{ borderTop: `4px solid ${FAMILY_COLORS[section.block_family] || '#94a3b8'}` }}>
+                    <span className="library-card-placeholder-family" style={{ color: FAMILY_COLORS[section.block_family] || '#94a3b8' }}>
+                      {familyLabelMap[section.block_family] || section.block_family}
                     </span>
+                    <span className="library-card-placeholder-domain">{section.source_sites?.normalized_domain || ''}</span>
+                    {section.text_summary && <p className="library-card-placeholder-text">{section.text_summary.slice(0, 80)}</p>}
                   </div>
                 )}
                 <div className="library-card-category">
