@@ -43,6 +43,12 @@ import { STORAGE_BUCKETS } from './storage-config.js'
 import { logger } from './logger.js'
 import { convertHtmlToTsx } from './claude-converter.js'
 import {
+  buildClaudeInstructions,
+  buildComponentName,
+  buildSectionSpec,
+  buildSectionSpecsMarkdown
+} from './export-instructions.js'
+import {
   collectCssAssetUrls,
   collectHtmlAssetUrls,
   createSectionScopeClass,
@@ -629,6 +635,323 @@ async function readBucketText(bucket: string, storagePath?: string | null) {
   const { data: file } = await supabaseAdmin.storage.from(bucket).download(storagePath)
   if (!file) return ''
   return file.text()
+}
+
+interface ExportSectionArtifact {
+  sectionId: string
+  blockFamily: string
+  componentName: string
+  domain: string
+  sourceUrl?: string
+  sourceTitle?: string
+  textSummary?: string
+  screenshotFile: string
+  screenshotBuffer?: Buffer
+  html: string
+  css: string
+}
+
+async function getExportSectionArtifact(
+  sectionId: string,
+  index: number,
+  usedComponentNames: Set<string>
+): Promise<ExportSectionArtifact | null> {
+  const prepared = await prepareSectionRender(sectionId)
+  if (!prepared) return null
+
+  let blockFamily = prepared.blockFamily || 'section'
+  let thumbnailPath = ''
+  let textSummary = ''
+  let sourceUrl = ''
+  let sourceTitle = ''
+  let domain = 'unknown'
+
+  if (HAS_SUPABASE) {
+    const { data: section } = await supabaseAdmin
+      .from('source_sections')
+      .select('id, block_family, thumbnail_storage_path, text_summary, source_pages(url, title), source_sites(normalized_domain)')
+      .eq('id', sectionId)
+      .single()
+
+    blockFamily = section?.block_family || blockFamily
+    thumbnailPath = section?.thumbnail_storage_path || ''
+    textSummary = section?.text_summary || ''
+    sourceUrl = section?.source_pages?.url || ''
+    sourceTitle = section?.source_pages?.title || ''
+    domain = section?.source_sites?.normalized_domain || ''
+  } else {
+    const section = await getSection(sectionId)
+    const page = section ? await getPageById(section.page_id) : null
+    blockFamily = section?.block_family || blockFamily
+    thumbnailPath = section?.thumbnail_storage_path || ''
+    textSummary = section?.text_summary || ''
+    sourceUrl = page?.url || ''
+    sourceTitle = page?.title || ''
+  }
+
+  if (!domain && sourceUrl) {
+    try {
+      domain = new URL(sourceUrl).hostname.replace(/^www\./, '')
+    } catch {
+      domain = 'unknown'
+    }
+  }
+
+  const componentName = buildComponentName(blockFamily, index, usedComponentNames)
+  const screenshotFile = `${String(index).padStart(2, '0')}-${blockFamily.replace(/[^a-z0-9_-]+/gi, '-') || 'section'}.png`
+  const screenshotBuffer = thumbnailPath
+    ? (
+      await readBucketFile(STORAGE_BUCKETS.SECTION_THUMBNAILS, thumbnailPath)
+      || await readBucketFile(STORAGE_BUCKETS.RAW_HTML, thumbnailPath)
+    )?.buffer
+    : undefined
+
+  return {
+    sectionId,
+    blockFamily,
+    componentName,
+    domain: domain || 'unknown',
+    sourceUrl: sourceUrl || undefined,
+    sourceTitle: sourceTitle || undefined,
+    textSummary: textSummary || undefined,
+    screenshotFile,
+    screenshotBuffer,
+    html: prepared.html,
+    css: prepared.css
+  }
+}
+
+async function streamScreenshotZipExport(
+  args: {
+    sectionIds: string[]
+    projectName?: string
+    companyName?: string
+    serviceDescription?: string
+  },
+  res: express.Response
+) {
+  const usedComponentNames = new Set<string>()
+  const artifacts: ExportSectionArtifact[] = []
+
+  for (let i = 0; i < args.sectionIds.length; i++) {
+    const artifact = await getExportSectionArtifact(args.sectionIds[i], i + 1, usedComponentNames)
+    if (artifact) artifacts.push(artifact)
+  }
+
+  if (artifacts.length === 0) {
+    res.status(404).json({ error: 'No exportable sections found' })
+    return
+  }
+
+  const specs = artifacts.map((artifact, i) => buildSectionSpec({
+    index: i + 1,
+    sectionId: artifact.sectionId,
+    blockFamily: artifact.blockFamily,
+    componentName: artifact.componentName,
+    domain: artifact.domain,
+    sourceUrl: artifact.sourceUrl,
+    sourceTitle: artifact.sourceTitle,
+    screenshotFile: artifact.screenshotFile,
+    textSummary: artifact.textSummary,
+    html: artifact.html,
+    css: artifact.css
+  }))
+
+  const projectName = (args.projectName || args.companyName || 'PARTCOPY Export Project').trim() || 'PARTCOPY Export Project'
+  const claudeMd = buildClaudeInstructions({
+    projectName,
+    companyName: args.companyName,
+    serviceDescription: args.serviceDescription,
+    specs
+  })
+  const sectionsMarkdown = buildSectionSpecsMarkdown(specs)
+  const sectionsJson = JSON.stringify({
+    projectName,
+    exportedAt: new Date().toISOString(),
+    sections: specs
+  }, null, 2)
+
+  const pkgJson = JSON.stringify({
+    name: 'partcopy-rebuild-kit',
+    private: true,
+    version: '1.0.0',
+    type: 'module',
+    scripts: {
+      dev: 'vite',
+      build: 'tsc -b && vite build'
+    },
+    dependencies: {
+      react: '^19.2.4',
+      'react-dom': '^19.2.4'
+    },
+    devDependencies: {
+      '@types/react': '^19.2.14',
+      '@types/react-dom': '^19.2.3',
+      '@vitejs/plugin-react': '^6.0.1',
+      '@tailwindcss/vite': '^4.1.0',
+      tailwindcss: '^4.1.0',
+      typescript: '^6.0.2',
+      vite: '^8.0.3'
+    }
+  }, null, 2)
+
+  const indexHtml = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${projectName}</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/index.tsx"></script>
+</body>
+</html>
+`
+
+  const indexCss = `@import 'tailwindcss';
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-family: "Noto Sans JP", "Hiragino Sans", sans-serif;
+}
+`
+
+  const indexTsx = `import ReactDOM from 'react-dom/client'
+import './index.css'
+import App from './App'
+
+ReactDOM.createRoot(document.getElementById('root')!).render(<App />)
+`
+
+  const imports = artifacts.map((artifact) => `import ${artifact.componentName} from './components/${artifact.componentName}'`).join('\n')
+  const renders = artifacts.map((artifact) => `      <${artifact.componentName} />`).join('\n')
+  const appTsx = `${imports}
+
+export default function App() {
+  return (
+    <main className="min-h-screen">
+${renders}
+    </main>
+  )
+}
+`
+
+  const readmeMd = `# PARTCOPY Rebuild Kit
+
+このZIPには元HTML/CSSではなく、スクリーンショットと再現指示書が入っています。
+
+## 使い方
+
+1. \`screenshots/\` で見た目を確認
+2. \`specs/sections.md\` で構成情報を確認
+3. \`CLAUDE.md\` を Claude Code に渡して \`src/components/\` を順番に実装
+
+## 開発
+
+\`\`\`bash
+npm install
+npm run dev
+\`\`\`
+`
+
+  const viteConfig = `import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+})
+`
+
+  const tsconfigJson = JSON.stringify({
+    compilerOptions: {
+      target: 'ES2020',
+      useDefineForClassFields: true,
+      lib: ['ES2020', 'DOM', 'DOM.Iterable'],
+      module: 'ESNext',
+      skipLibCheck: true,
+      moduleResolution: 'bundler',
+      allowImportingTsExtensions: true,
+      isolatedModules: true,
+      moduleDetection: 'force',
+      noEmit: true,
+      jsx: 'react-jsx',
+      strict: true,
+      noUnusedLocals: false,
+      noUnusedParameters: false
+    },
+    include: ['src']
+  }, null, 2)
+
+  const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480"><rect width="800" height="480" fill="#e2e8f0"/><text x="400" y="240" text-anchor="middle" fill="#64748b" font-family="sans-serif" font-size="22">Replace with your own asset</text></svg>`
+
+  res.setHeader('Content-Type', 'application/zip')
+  res.setHeader('Content-Disposition', 'attachment; filename="partcopy-export.zip"')
+
+  const archive = archiver('zip', { zlib: { level: 9 } })
+  archive.on('error', (archiveErr: Error) => {
+    logger.error('Archiver error mid-stream', { error: archiveErr.message })
+    if (!res.headersSent) {
+      res.status(500).json({ error: archiveErr.message })
+    } else {
+      res.end()
+    }
+  })
+
+  archive.pipe(res)
+  archive.append(claudeMd, { name: 'CLAUDE.md' })
+  archive.append(readmeMd, { name: 'README.md' })
+  archive.append(sectionsMarkdown, { name: 'specs/sections.md' })
+  archive.append(sectionsJson, { name: 'specs/sections.json' })
+  archive.append(indexHtml, { name: 'index.html' })
+  archive.append(pkgJson, { name: 'package.json' })
+  archive.append(tsconfigJson, { name: 'tsconfig.json' })
+  archive.append(viteConfig, { name: 'vite.config.ts' })
+  archive.append(indexCss, { name: 'src/index.css' })
+  archive.append(indexTsx, { name: 'src/index.tsx' })
+  archive.append(appTsx, { name: 'src/App.tsx' })
+  archive.append(placeholderSvg, { name: 'public/assets/placeholder.svg' })
+
+  for (const artifact of artifacts) {
+    const spec = specs.find((entry) => entry.id === artifact.sectionId)
+    const componentStub = `export default function ${artifact.componentName}() {
+  return (
+    <section className="px-6 py-20">
+      <div className="mx-auto max-w-6xl rounded-3xl border border-dashed border-slate-300 bg-white p-10 shadow-sm">
+        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
+          ${spec?.blockFamilyLabel || artifact.blockFamily}
+        </p>
+        <h2 className="mt-4 text-3xl font-semibold tracking-tight text-slate-900">
+          ${artifact.componentName}
+        </h2>
+        <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
+          screenshots/${artifact.screenshotFile} と specs/sections.md を参考に Tailwind で再構築してください。
+        </p>
+      </div>
+    </section>
+  )
+}
+`
+    archive.append(componentStub, { name: `src/components/${artifact.componentName}.tsx` })
+
+    if (artifact.screenshotBuffer) {
+      archive.append(artifact.screenshotBuffer, { name: `screenshots/${artifact.screenshotFile}` })
+    }
+  }
+
+  await archive.finalize()
 }
 
 async function createExtractJobRecord(url: string, genre: string, tags: string[], maxPages: number = 5) {
