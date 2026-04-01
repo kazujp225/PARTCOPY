@@ -124,7 +124,7 @@ function familySpecificNotes(blockFamily: string) {
 }
 
 export function buildComponentName(blockFamily: string, index: number, usedNames: Set<string>) {
-  const baseName = `${blockFamily || 'section'}-section`
+  const baseName = `${blockFamily || 'section'}`
     .replace(/[^a-zA-Z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .split('-')
@@ -270,17 +270,17 @@ export function buildClaudeInstructions(args: {
 ## Non-Negotiables
 
 1. 元サイトの HTML / CSS / class 名をコピーしない。
-2. `screenshots/` の見た目を参考に、`specs/sections.md` の構成情報を使って Tailwind で再現する。
+2. \`screenshots/\` の見た目を参考に、\`specs/sections.md\` の構成情報を使って Tailwind で再現する。
 3. 文言・画像は参考に留め、固有名詞や著作物はそのまま流用しない。
 4. レイアウト、余白、タイポグラフィ、情報階層を優先して再現する。
-5. 各セクションは `src/components/` 内の対応ファイルを実装する。
+5. 各セクションは \`src/components/\` 内の対応ファイルを実装する。
 
 ## Working Order
 
-1. `specs/sections.md` を読み、セクション順と役割を把握する。
-2. `screenshots/` を見ながら `src/components/*.tsx` を順番に実装する。
-3. `src/App.tsx` の並び順は変えず、LPとして自然につながるよう統一感を整える。
-4. 共通トークンが必要なら `src/index.css` に追加し、Tailwind ユーティリティ中心でまとめる。
+1. \`specs/sections.md\` を読み、セクション順と役割を把握する。
+2. \`screenshots/\` を見ながら \`src/components/*.tsx\` を順番に実装する。
+3. \`src/App.tsx\` の並び順は変えず、LPとして自然につながるよう統一感を整える。
+4. 共通トークンが必要なら \`src/index.css\` に追加し、Tailwind ユーティリティ中心でまとめる。
 
 ## Section Map
 
@@ -292,12 +292,12 @@ ${sectionTable}
 
 - React + TypeScript + Vite で動作するLP
 - スタイリングは Tailwind CSS 4 を使用
-- 画像は `public/assets/placeholder.svg` または差し替え用アセットで仮置き
+- 画像は \`public/assets/placeholder.svg\` または差し替え用アセットで仮置き
 - モバイルとデスクトップで破綻しないレスポンシブ実装
 
 ## Notes
 
-- セクション実装の補助情報は `specs/sections.json` にも入っています。
+- セクション実装の補助情報は \`specs/sections.json\` にも入っています。
 - 迷ったら「コード再利用」ではなく「スクショから再設計」を優先してください。
 `
 }

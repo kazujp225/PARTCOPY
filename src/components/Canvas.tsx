@@ -20,14 +20,12 @@ interface Props {
   onExportZip?: () => void
   exporting?: boolean
   exportProgress?: { message: string; current?: number; total?: number; sectionName?: string; estimate?: string } | null
-  includeImages?: boolean
-  onToggleIncludeImages?: (v: boolean) => void
   onSaveProject?: () => void
   onNewProject?: () => void
   designEditedSections?: Record<string, number>
 }
 
-export function Canvas({ items, onRemove, onMove, onViewTsx, onDesignEdit, onExportZip, exporting, exportProgress, includeImages, onToggleIncludeImages, onSaveProject, onNewProject, designEditedSections }: Props) {
+export function Canvas({ items, onRemove, onMove, onViewTsx, onDesignEdit, onExportZip, exporting, exportProgress, onSaveProject, onNewProject, designEditedSections }: Props) {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const dragRef = useRef<number | null>(null)
@@ -98,16 +96,8 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onDesignEdit, onExp
             )}
             {onExportZip && items.length > 0 && (
               <div className="zip-export-group">
-                <label className="include-images-toggle">
-                  <input
-                    type="checkbox"
-                    checked={includeImages ?? true}
-                    onChange={e => onToggleIncludeImages?.(e.target.checked)}
-                  />
-                  画像を含める
-                </label>
                 <button className="zip-btn primary" onClick={onExportZip} disabled={exporting}>
-                  {exporting ? '出力中...' : '\u2193 ZIP ダウンロード'}
+                  {exporting ? '出力中...' : '\u2193 再現用ZIPを出力'}
                 </button>
                 {exporting && exportProgress && (
                   <div className="export-progress">

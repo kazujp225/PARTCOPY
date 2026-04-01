@@ -22,11 +22,9 @@ interface Props {
   onExportZip?: () => void
   exporting?: boolean
   exportProgress?: { message: string; current?: number; total?: number; sectionName?: string; estimate?: string } | null
-  includeImages?: boolean
-  onToggleIncludeImages?: (v: boolean) => void
 }
 
-export function Preview({ items, onExportZip, exporting, exportProgress, includeImages, onToggleIncludeImages }: Props) {
+export function Preview({ items, onExportZip, exporting, exportProgress }: Props) {
   const [mode, setMode] = useState<ViewMode>('merged')
   const [device, setDevice] = useState<DeviceMode>('desktop')
 
@@ -48,21 +46,13 @@ export function Preview({ items, onExportZip, exporting, exportProgress, include
         <div className="preview-header-main">
           <h2>プレビュー</h2>
           <p className="preview-subtitle">
-            {items.length} セクション · ZIP 出力に近い見た目で確認できます
+            {items.length} セクション · 再現用ZIPに含める参照デザインを確認できます
           </p>
         </div>
         {onExportZip && items.length > 0 && (
           <div className="zip-export-group">
-            <label className="include-images-toggle">
-              <input
-                type="checkbox"
-                checked={includeImages ?? true}
-                onChange={e => onToggleIncludeImages?.(e.target.checked)}
-              />
-              画像を含める
-            </label>
             <button className="zip-btn primary" onClick={onExportZip} disabled={exporting}>
-              {exporting ? '出力中...' : '↓ ZIP ダウンロード'}
+              {exporting ? '出力中...' : '↓ 再現用ZIPを出力'}
             </button>
             {exporting && exportProgress && (
               <div className="export-progress">

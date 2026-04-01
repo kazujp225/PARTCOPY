@@ -49,7 +49,6 @@ export default function App() {
   const [designEditedSections, setDesignEditedSections] = useState<Record<string, number>>({})
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState<{ message: string; current?: number; total?: number; sectionName?: string; estimate?: string } | null>(null)
-  const [includeImages, setIncludeImages] = useState(true)
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
   const [projectList, setProjectList] = useState<Array<{id: string; name: string; canvas_json: any[]; created_at: string}>>([])
   const [activeProjectId, setActiveProjectIdState] = useState<string | null>(loadActiveProjectId)
@@ -563,55 +562,18 @@ export default function App() {
         return
       }
       const sectionIds = validBlocks.map(c => c.sectionId)
+      const projectName = activeProjectId
+        ? projectList.find((project) => project.id === activeProjectId)?.name
+        : undefined
 
-      // Step 1: Pre-convert sections that don't have TSX yet (one by one with progress)
-      const toConvert = validBlocks.filter(b => {
-        const sec = sections.find(s => s.id === b.sectionId)
-        return sec && !sec.tsx_code_storage_path
+      setExportProgress({
+        message: 'スクリーンショットと指示書を収集中...',
+        estimate: '数十秒ほどお待ちください'
       })
-
-      if (toConvert.length > 0) {
-        const estimateMin = Math.max(1, Math.ceil(toConvert.length * 1.5))
-        for (let i = 0; i < toConvert.length; i++) {
-          const block = toConvert[i]
-          const sec = sections.find(s => s.id === block.sectionId)
-          const familyName = sec?.block_family || 'section'
-          setExportProgress({
-            message: 'ただいま変換しております',
-            estimate: `約${estimateMin}分ほどお待ちください`,
-            current: i,
-            total: toConvert.length,
-            sectionName: familyName
-          })
-          try {
-            const convRes = await fetch(`/api/sections/${block.sectionId}/convert-tsx`, {
-              method: 'POST',
-              signal: AbortSignal.timeout(360_000) // 6 min per section
-            })
-            if (convRes.ok) {
-              setSections(prev => prev.map(s =>
-                s.id === block.sectionId ? { ...s, tsx_code_storage_path: `${s.id}/component.tsx` } : s
-              ))
-            }
-          } catch {
-            // Failed — ZIP will use HTML fallback for this section
-          }
-          setExportProgress({
-            message: 'ただいま変換しております',
-            estimate: `約${estimateMin}分ほどお待ちください`,
-            current: i + 1,
-            total: toConvert.length,
-            sectionName: familyName
-          })
-        }
-      }
-
-      // Step 2: Generate ZIP (conversions done, server skips already-converted)
-      setExportProgress({ message: 'ZIP生成中...' })
       const res = await fetch('/api/export/zip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sectionIds, includeImages }),
+        body: JSON.stringify({ sectionIds, projectName }),
         signal: AbortSignal.timeout(300_000) // 5 min for ZIP generation
       })
       if (!res.ok) throw new Error('ZIP出力に失敗しました')
@@ -629,7 +591,7 @@ export default function App() {
       setExporting(false)
       setExportProgress(null)
     }
-  }, [canvas, sections, includeImages, activeProjectId])
+  }, [canvas, sections, activeProjectId, projectList])
 
   const handleNewProject = async (name: string) => {
     try {
@@ -981,13 +943,13 @@ export default function App() {
       {view === 'editor' && (
         <div className="editor-layout">
           <PartsPanel sections={filteredSections} onAdd={addToCanvas} onRemove={removeSection} onViewTsx={handleViewTsx} />
-          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onDesignEdit={(sectionId, familyName) => setDesignEditTarget({ sectionId, familyName })} onExportZip={handleExportZip} exporting={exporting} exportProgress={exportProgress} includeImages={includeImages} onToggleIncludeImages={setIncludeImages} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} designEditedSections={designEditedSections} />
+          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onDesignEdit={(sectionId, familyName) => setDesignEditTarget({ sectionId, familyName })} onExportZip={handleExportZip} exporting={exporting} exportProgress={exportProgress} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} designEditedSections={designEditedSections} />
         </div>
       )}
 
       {view === 'preview' && (
         <>
-          <Preview items={canvasItems} onExportZip={handleExportZip} exporting={exporting} exportProgress={exportProgress} includeImages={includeImages} onToggleIncludeImages={setIncludeImages} />
+          <Preview items={canvasItems} onExportZip={handleExportZip} exporting={exporting} exportProgress={exportProgress} />
           {canvasItems.length > 0 && (
             <div className="preview-project-bar">
               <button className="preview-save-btn" onClick={handleSaveProject}>
