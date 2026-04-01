@@ -69,6 +69,24 @@ export function GeminiDesignEditor({ sectionId, familyName, onClose, onSaved }: 
   const sendToGemini = useCallback(async (prompt: string) => {
     if (!prompt.trim() || generating) return
 
+    // Gemini 2.0 Flash: input $0.10/MTok, output $0.40/MTok
+    const inputChars = html.length + prompt.length + 1500 // HTML + prompt + system prompt
+    const estimatedInputTokens = Math.ceil(inputChars / 4)
+    const estimatedOutputTokens = Math.ceil(estimatedInputTokens * 0.6) // output ≈ 60% of input
+    const estimatedCostUsd = (estimatedInputTokens * 0.10 + estimatedOutputTokens * 0.40) / 1_000_000
+    const estimatedCostYen = Math.ceil(estimatedCostUsd * 150 * 100) / 100 // USD→JPY
+    const costDisplay = estimatedCostYen < 0.1
+      ? '0.1円未満'
+      : `約${estimatedCostYen.toFixed(1)}円`
+
+    const confirmed = window.confirm(
+      `⚠️ Gemini API（従量課金）を使用します\n\n` +
+      `推定コスト: ${costDisplay}（入力 ${Math.round(estimatedInputTokens / 1000)}Kトークン）\n` +
+      `モデル: gemini-2.0-flash\n\n` +
+      `実行しますか？`
+    )
+    if (!confirmed) return
+
     const userMsg: Message = { role: 'user', content: prompt }
     setMessages(prev => [...prev, userMsg])
     setInput('')

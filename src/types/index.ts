@@ -69,6 +69,8 @@ export interface SourceSection {
   source_pages?: { url: string; title: string }
   source_sites?: { normalized_domain: string; genre: string; tags: string[]; industry?: string }
   created_at: string
+  designScore?: number
+  designFlags?: string[]
 }
 
 // ============================================================

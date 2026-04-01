@@ -35,7 +35,8 @@ import {
   listProjects,
   createProject as createLocalProject,
   updateProject as updateLocalProject,
-  deleteProject as deleteLocalProject
+  deleteProject as deleteLocalProject,
+  updateSourceSection
 } from './local-store.js'
 import { HAS_SUPABASE, supabaseAdmin } from './supabase.js'
 import { STORAGE_BUCKETS } from './storage-config.js'
@@ -55,7 +56,7 @@ import {
   extractHtmlTokens,
   filterCssForSection
 } from './render-utils.js'
-import { extractColorsFromCss, extractFontsFromCss, generateDesignTokensCss, generateBrandGuide } from './design-tokens.js'
+import { extractColorsFromCss, extractFontsFromCss, generateDesignTokensCss, generateBrandGuide, generateBrandOverrideCss, analyzeCssSophistication } from './design-tokens.js'
 
 /**
  * Sanitize error messages before sending to clients.
@@ -1407,6 +1408,61 @@ app.get('/api/preview/merged', async (req, res) => {
 // ============================================================
 // Library: Get all sections with filters
 // ============================================================
+// ============================================================
+// Design quality scoring (local, no API)
+// ============================================================
+function computeDesignQuality(section: any): { score: number; flags: string[] } {
+  const f = section.features_jsonb || {}
+  const text = section.text_summary || ''
+  const family = section.block_family || ''
+  const flags: string[] = []
+
+  // --- Garbage detection (instant disqualifiers → score 0) ---
+  if (/\{\s*(position|display|width|height|margin|padding)\s*:/.test(text)) {
+    flags.push('css_leak')
+  }
+  if ((f.linkCount || 0) >= 40 && (f.headingCount || 0) <= 1 && family !== 'footer') {
+    flags.push('nav_dump')
+  }
+  if ((f.textLength || text.length) < 20 && (f.imageCount || 0) === 0) {
+    flags.push('empty')
+  }
+  if ((f.textLength || text.length) > 5000 && (f.headingCount || 0) >= 10) {
+    flags.push('page_dump')
+  }
+  if ((f.imageCount || 0) === 1 && (f.textLength || text.length) < 30 && (f.buttonCount || 0) === 0) {
+    flags.push('image_only')
+  }
+  // Any garbage flag → score 0, don't bother computing further
+  if (flags.length > 0) {
+    return { score: 0, flags }
+  }
+
+  // --- Content quality (max 30 points) ---
+  let contentScore = 0
+  if (f.hasImages || (f.imageCount || 0) > 0) contentScore += 6
+  if (f.hasCTA || (f.buttonCount || 0) > 0) contentScore += 5
+  if ((f.headingCount || 0) >= 1 && (f.headingCount || 0) <= 5) contentScore += 5
+  if ((f.cardCount || 0) >= 2) contentScore += 5
+  if (f.hasForm) contentScore += 3
+  if (f.repeatedChildPattern) contentScore += 3
+  const tl = f.textLength || text.length
+  if (tl >= 50 && tl <= 2000) contentScore += 3
+  contentScore = Math.min(contentScore, 30)
+
+  // --- CSS sophistication (max 50 points) ---
+  // Pre-computed by /api/library/reanalyze and stored in features_jsonb
+  const cssSoph = f.cssSophistication || 0
+  const cssScore = Math.round(cssSoph * 0.5) // 0-100 → 0-50
+
+  // --- Classifier confidence (max 20 points) ---
+  const conf = section.classifier_confidence || 0
+  const confScore = Math.round(conf * 20)
+
+  const score = Math.max(0, Math.min(100, contentScore + cssScore + confScore))
+  return { score, flags }
+}
+
 const parseBooleanQuery = (value: unknown) => value === 'true' || value === '1'
 
 const normalizeSearchValue = (value: unknown) => String(value || '').trim().toLowerCase()
@@ -1421,25 +1477,45 @@ app.get('/api/library', async (req, res) => {
     sort,
     hasCta,
     hasForm,
-    hasImages
+    hasImages,
+    hideJunk
   } = req.query
 
   const limit = Math.min(Math.max(Number(lim) || 60, 1), 5000)
+  const shouldHideJunk = parseBooleanQuery(hideJunk)
   try {
+    // When sorting by quality or hiding junk, fetch more to filter/sort client-side
+    const fetchLimit = (sort === 'quality' || shouldHideJunk) ? Math.min(limit * 3, 5000) : limit
     const results = await getLibraryResults({
       genre: typeof genre === 'string' ? genre : undefined,
       family: typeof family === 'string' ? family : undefined,
       industry: typeof industry === 'string' ? industry : undefined,
-      limit,
+      limit: fetchLimit,
       q: typeof q === 'string' ? q : undefined,
-      sort: typeof sort === 'string' ? sort : 'newest',
+      sort: sort === 'quality' ? 'newest' : (typeof sort === 'string' ? sort : 'newest'),
       hasCta: parseBooleanQuery(hasCta),
       hasForm: parseBooleanQuery(hasForm),
       hasImages: parseBooleanQuery(hasImages)
     })
 
+    // Compute quality scores
+    let scored = results.map((section: any) => {
+      const { score, flags } = computeDesignQuality(section)
+      return { ...section, designScore: score, designFlags: flags }
+    })
+
+    // Filter junk
+    if (shouldHideJunk) {
+      scored = scored.filter((s: any) => s.designFlags.length === 0)
+    }
+
+    // Sort by quality
+    if (sort === 'quality') {
+      scored.sort((a: any, b: any) => b.designScore - a.designScore)
+    }
+
     res.json({
-      sections: results.map((section: any) => ({
+      sections: scored.slice(0, limit).map((section: any) => ({
         ...section,
         htmlUrl: (section.sanitized_html_storage_path || section.raw_html_storage_path) ? `/api/sections/${section.id}/render` : null,
         thumbnailUrl: section.thumbnail_storage_path ? `/api/sections/${section.id}/thumbnail` : null
@@ -1490,6 +1566,102 @@ app.get('/api/library/count', async (_req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: safeErrorMessage(err) })
   }
+})
+
+// ============================================================
+// Reanalyze: compute CSS sophistication for all sections
+// ============================================================
+let reanalyzeRunning = false
+app.post('/api/library/reanalyze', async (_req, res) => {
+  if (reanalyzeRunning) {
+    res.json({ status: 'already_running' })
+    return
+  }
+  reanalyzeRunning = true
+  res.json({ status: 'started' })
+
+  // Run in background
+  ;(async () => {
+    try {
+      // Get all sections
+      const allSections = HAS_SUPABASE
+        ? (await supabaseAdmin.from('source_sections').select('id, page_id, features_jsonb, block_family, text_summary, classifier_confidence').limit(10000)).data || []
+        : await listLibrarySections({ limit: 100000, sort: 'newest' })
+
+      // Group by page_id to load CSS once per page
+      const byPage = new Map<string, typeof allSections>()
+      for (const s of allSections) {
+        const pageId = s.page_id || 'unknown'
+        if (!byPage.has(pageId)) byPage.set(pageId, [])
+        byPage.get(pageId)!.push(s)
+      }
+
+      let analyzed = 0
+      let deleted = 0
+      const QUALITY_THRESHOLD = 10 // Sections below this get auto-deleted (low to accommodate SPA sites with dynamic CSS)
+
+      for (const [pageId, sections] of byPage) {
+        // Load CSS for this page once
+        let cssBundle = ''
+        try {
+          if (HAS_SUPABASE) {
+            const { data: page } = await supabaseAdmin.from('source_pages').select('css_bundle_path').eq('id', pageId).single()
+            if (page?.css_bundle_path) cssBundle = await loadSectionCssBundle(page.css_bundle_path)
+          } else {
+            const page = await getPageById(pageId)
+            if (page?.css_bundle_path) cssBundle = await loadSectionCssBundle(page.css_bundle_path)
+          }
+        } catch {}
+
+        const { score: cssSoph } = analyzeCssSophistication(cssBundle)
+
+        for (const section of sections) {
+          const features = section.features_jsonb || {}
+          features.cssSophistication = cssSoph
+          const updatedFeatures = { ...features, cssSophistication: cssSoph }
+
+          // Compute new quality score to check threshold
+          const quality = computeDesignQuality({ ...section, features_jsonb: updatedFeatures })
+
+          if (quality.score < QUALITY_THRESHOLD) {
+            // Delete low quality section
+            try {
+              if (HAS_SUPABASE) {
+                await supabaseAdmin.from('source_sections').delete().eq('id', section.id)
+              } else {
+                await deleteLocalSection(section.id)
+              }
+              deleted++
+            } catch {}
+          } else {
+            // Update features_jsonb with CSS sophistication
+            try {
+              if (HAS_SUPABASE) {
+                await supabaseAdmin.from('source_sections').update({ features_jsonb: updatedFeatures }).eq('id', section.id)
+              } else {
+                await updateSourceSection(section.id, { features_jsonb: updatedFeatures } as any)
+              }
+            } catch {}
+          }
+          analyzed++
+        }
+
+        if (analyzed % 100 === 0) {
+          logger.info('Reanalyze progress', { analyzed, deleted, total: allSections.length })
+        }
+      }
+
+      logger.info('Reanalyze complete', { analyzed, deleted, total: allSections.length })
+    } catch (err: any) {
+      logger.error('Reanalyze failed', { error: err.message })
+    } finally {
+      reanalyzeRunning = false
+    }
+  })()
+})
+
+app.get('/api/library/reanalyze/status', (_req, res) => {
+  res.json({ running: reanalyzeRunning })
 })
 
 // ============================================================
@@ -2231,15 +2403,32 @@ app.post('/api/export/zip', async (req, res) => {
   }
 
   try {
-    const preparedSections: PreparedSectionRender[] = []
+    const rawPreparedSections: PreparedSectionRender[] = []
     for (const sectionId of sectionIds) {
       const prepared = await prepareSectionRender(sectionId)
-      if (prepared) preparedSections.push(prepared)
+      if (prepared) rawPreparedSections.push(prepared)
     }
 
-    if (preparedSections.length === 0) {
+    if (rawPreparedSections.length === 0) {
       res.status(404).json({ error: 'No exportable sections found' })
       return
+    }
+
+    // --- Auto-tuning: remove duplicate singleton sections ---
+    // Only keep the first navigation and first footer; additional ones are noise
+    const SINGLETON_FAMILIES = new Set(['navigation', 'footer'])
+    const seenFamilies = new Set<string>()
+    const preparedSections: PreparedSectionRender[] = []
+    for (const section of rawPreparedSections) {
+      const family = section.blockFamily
+      if (SINGLETON_FAMILIES.has(family)) {
+        if (seenFamilies.has(family)) {
+          logger.info('Auto-tuning: removed duplicate section', { family, sectionId: section.sectionId })
+          continue
+        }
+        seenFamilies.add(family)
+      }
+      preparedSections.push(section)
     }
 
     const exportAssetPathBySource = new Map<string, string>()
@@ -2770,7 +2959,8 @@ ${componentSlugs.map(c => `          <Route path="/${c.slug}" element={<${c.name
 }
 `
 
-    const indexCss = `@import 'tailwindcss';\n@import './design-tokens.css';\n\n${dedupeCssBlocks([PARTCOPY_BASE_CSS, layoutCss, ...globalFontFaceCss]).join('\n\n')}\n`
+    const brandOverrideCss = generateBrandOverrideCss()
+    const indexCss = `@import 'tailwindcss';\n@import './design-tokens.css';\n\n${dedupeCssBlocks([PARTCOPY_BASE_CSS, brandOverrideCss, layoutCss, ...globalFontFaceCss]).join('\n\n')}\n`
 
     // Generate setup.sh
     const setupSh = `#!/bin/bash
@@ -2845,21 +3035,30 @@ npm run build
 
 ## このプロジェクトについて
 
-このサイトは **PARTCOPY** というツールで作られました。
-プロの実在サイトから「ヒーロー」「料金プラン」「FAQ」「フッター」など、
-デザインパーツを1つずつ選んで組み合わせた **React + TypeScript + Vite** のプロジェクトです。
+このサイトは **PARTCOPY** というツールで、複数の実在サイトからデザインパーツを
+選んで組み合わせた **React + TypeScript + Vite** のプロジェクトです。
 
-## 最重要: reference-screenshots/ を必ず見てください
+### 自動チューニング済み（PARTCOPY側で処理済み）
 
-\`reference-screenshots/\` フォルダに各セクションの**元サイトのスクリーンショット**が入っています。
-**これが正解の見た目**です。現在の \`src/components/\` のコードはHTMLの切り貼りなので見た目が崩れています。
+以下はエクスポート時に自動処理されています。**手動で再作業する必要はありません：**
 
-あなたの仕事は：
-1. **reference-screenshots/ のスクショを見て、その通りの見た目を再現する**
-2. 既存のHTML/CSSは参考データとして使い、**Tailwind CSS + React で書き直す**
-3. テキスト・画像パスは既存コードから引き継ぐ
-4. \`design-tokens.css\` のカラー変数を使ってブランドを統一する
-5. レスポンシブ対応する（Tailwindのブレークポイントを使用）
+- **重複セクション除去** — ヘッダー・フッターは1つだけ残し、2個目以降は自動削除済み
+- **フォント統一** — 全セクションのフォントファミリーが \`design-tokens.css\` の変数で統一済み
+- **配色統一** — リンク・ボタンの色が \`--brand-primary\` で統一済み
+- **見出しサイズ統一** — h1〜h4のサイズスケールが全セクションで統一済み
+- **セクション余白統一** — 上下パディングが統一済み
+- **コンテナ幅統一** — max-width: 1200px で統一済み
+
+### あなたの仕事（残りタスク）
+
+上記は処理済みなので、以下に集中してください：
+
+1. **テキスト差し替え** — ダミーテキストを自社情報（会社名・サービス名・キャッチコピー等）に書き換え
+2. **画像差し替え** — \`public/assets/\` の画像を自社のものに入れ替え（アスペクト比を合わせる）
+3. **プライバシーポリシー・利用規約** — フッターにリンクを追加、必要ならページを新規作成
+4. **ブランドカラー調整** — \`src/design-tokens.css\` の \`--brand-primary\` 等を自社カラーに変更（変更するだけで全体に反映）
+5. **レスポンシブ微調整** — 必要に応じてブレークポイントを調整
+6. **reference-screenshots/ を参考に見た目を確認** — 元デザインの意図を確認できる
 
 元サイトの画像（ロゴ・写真等）は \`public/assets/\` に同梱されているのでそのまま使えます。
 
@@ -2970,64 +3169,23 @@ public/assets/ の画像を全てリストアップして、
 その後、指定する画像を差し替えます。
 \`\`\`
 
-### カラー（ブランドカラー）の変更
+### カラー変更（一番簡単）
+
+\`design-tokens.css\` の変数を変えるだけで全セクションに自動反映されます：
 
 \`\`\`
-サイト全体のメインカラーを #FF6B35 に統一してください。
-各コンポーネントのCSS内で使われている主要な色（ボタン、見出し、アクセントなど）を
-このカラーに変更してください。背景色や文字色のコントラストが十分か確認してください。
+src/design-tokens.css の --brand-primary を自社カラー（例: #FF6B35）に変更してください。
+--brand-secondary と --brand-accent も合わせて調整してください。
+これだけでボタン・リンク・アクセントカラーが全体で統一されます。
 \`\`\`
 
-### フォントの変更
+### プライバシーポリシー追加
 
 \`\`\`
-サイト全体のフォントを Noto Sans JP に変更してください。
-src/index.css の @font-face や font-family を修正し、
-各コンポーネント内の font-family も合わせて統一してください。
+フッターに「プライバシーポリシー」と「利用規約」のリンクを追加してください。
+それぞれ src/pages/Privacy.tsx と src/pages/Terms.tsx を新規作成し、
+App.tsx にルートを追加してください。一般的な内容のテンプレートで構いません。
 \`\`\`
-
-### セクションの順序変更
-
-\`\`\`
-src/App.tsx でセクションの並び順を変更してください。
-HeroSection を一番上、FooterSection を一番下にして、
-間のセクション順を以下の通りにしてください：
-1. Hero
-2. Feature
-3. Pricing
-4. FAQ
-5. Contact
-6. Footer
-\`\`\`
-
-### セクションの削除
-
-\`\`\`
-○○Section を削除してください。
-src/App.tsx から import と JSX の両方を削除してください。
-src/components/○○Section.tsx ファイルも削除してOKです。
-\`\`\`
-
-### レスポンシブ対応
-
-\`\`\`
-このサイトをスマートフォンでも見やすくしてください。
-各コンポーネントのCSSにメディアクエリ (@media) を追加して、
-768px以下の画面幅で以下を対応してください：
-- 横並びレイアウトを縦並びに
-- フォントサイズの調整
-- パディング・マージンの縮小
-- 画像サイズの調整
-既存のデザインはデスクトップ版としてそのまま残してください。
-\`\`\`
-
-### ビルド・デプロイ
-
-\`\`\`
-npm run build を実行して本番用ビルドを作成してください。
-\`\`\`
-
-${brandGuide}
 
 ---
 
@@ -3149,6 +3307,195 @@ ${imageAssets.map(a => `| \`public${a.exportPath}\` | ${(a.buffer.length / 1024)
 // ============================================================
 // Auto-Crawl Queue Management
 // ============================================================
+// ============================================================
+// Screenshot-based Export (new pipeline)
+// ============================================================
+app.post('/api/export/screenshot-zip', async (req, res) => {
+  const { sectionIds, serviceName, companyName, serviceDescription } = req.body as {
+    sectionIds: string[]
+    serviceName?: string
+    companyName?: string
+    serviceDescription?: string
+  }
+
+  if (!sectionIds || !Array.isArray(sectionIds) || sectionIds.length === 0) {
+    res.status(400).json({ error: 'sectionIds array required' })
+    return
+  }
+
+  try {
+    const archive = archiver('zip', { zlib: { level: 9 } })
+    res.setHeader('Content-Type', 'application/zip')
+    res.setHeader('Content-Disposition', 'attachment; filename="partcopy-screenshot-export.zip"')
+    archive.pipe(res)
+
+    const sectionDetails: { index: number; family: string; domain: string; screenshotFile: string }[] = []
+
+    for (let i = 0; i < sectionIds.length; i++) {
+      const sectionId = sectionIds[i]
+      const section = HAS_SUPABASE
+        ? (await supabaseAdmin.from('source_sections').select('id, block_family, thumbnail_storage_path, text_summary, site_id, page_id').eq('id', sectionId).single()).data
+        : await getSection(sectionId)
+
+      if (!section) continue
+
+      // Get domain
+      let domain = 'unknown'
+      if (HAS_SUPABASE) {
+        const { data: site } = await supabaseAdmin.from('source_sites').select('normalized_domain').eq('id', section.site_id).single()
+        domain = site?.normalized_domain || 'unknown'
+      }
+
+      // Get screenshot
+      const thumbPath = section.thumbnail_storage_path
+      if (thumbPath) {
+        const thumbFile = await readBucketFile(STORAGE_BUCKETS.SECTION_THUMBNAILS, thumbPath)
+          || await readBucketFile(STORAGE_BUCKETS.RAW_HTML, thumbPath)
+        if (thumbFile) {
+          const family = section.block_family || 'section'
+          const fileName = `${String(i + 1).padStart(2, '0')}-${family}.png`
+          archive.append(thumbFile.buffer, { name: `screenshots/${fileName}` })
+          sectionDetails.push({ index: i + 1, family, domain, screenshotFile: fileName })
+        }
+      }
+    }
+
+    // Generate CLAUDE.md instruction file
+    const svcName = serviceName || '（サービス名を入力）'
+    const coName = companyName || '（会社名を入力）'
+    const svcDesc = serviceDescription || '（サービスの説明を入力）'
+
+    const sectionList = sectionDetails.map(s =>
+      `| ${s.index} | ${s.family} | screenshots/${s.screenshotFile} | ${s.domain} |`
+    ).join('\n')
+
+    const claudeMd = `# CLAUDE.md — スクリーンショットベースLP構築指示書
+
+> このファイルは Claude Code（AI）向けの指示書です。
+> screenshots/ フォルダのスクリーンショットを参考に、LPを構築してください。
+
+---
+
+## プロジェクト情報
+
+- **会社名**: ${coName}
+- **サービス名**: ${svcName}
+- **サービス概要**: ${svcDesc}
+
+## あなたの仕事
+
+\`screenshots/\` フォルダに、プロの実在サイトから抽出したデザインのスクリーンショットが入っています。
+
+**これらのスクショの「デザインの雰囲気・レイアウト・構成」を参考にして、${svcName}のLPをゼロから構築してください。**
+
+### 重要なルール
+
+1. **スクショの見た目を参考にする** — 色使い、レイアウト、余白感、フォントの雰囲気を真似る
+2. **テキストは自社用に書き換える** — スクショ内のテキストはコピーしない。${svcName}の内容で書く
+3. **画像はプレースホルダーにする** — \`/assets/placeholder.svg\` や Unsplash の URL を使用
+4. **Tailwind CSS + React で構築** — 統一されたデザインシステムで書く
+5. **レスポンシブ対応** — モバイル・タブレット・デスクトップ
+
+### セクション構成（上から順番に配置）
+
+| 順番 | セクション種別 | 参考スクショ | 参考元サイト |
+|------|---------------|-------------|-------------|
+${sectionList}
+
+各スクショのデザインを参考に、対応するセクションを実装してください。
+
+## 技術スタック
+
+| 項目 | 内容 |
+|------|------|
+| フレームワーク | React 19 + TypeScript |
+| ビルドツール | Vite 6 |
+| CSS | Tailwind CSS 4 |
+| フォント | Noto Sans JP（Google Fonts） |
+
+## クイックスタート
+
+\`\`\`bash
+npm install
+npm run dev
+\`\`\`
+
+## ファイル構造
+
+\`\`\`
+├── src/
+│   ├── App.tsx              ← 全セクションを並べる
+│   ├── index.tsx            ← エントリーポイント
+│   ├── index.css            ← Tailwind import + base styles
+│   └── components/          ← 各セクション
+│       ├── HeroSection.tsx
+│       ├── FeatureSection.tsx
+│       └── ...
+├── screenshots/             ← 参考スクリーンショット
+├── public/assets/           ← 画像を配置
+├── index.html
+└── package.json
+\`\`\`
+`
+
+    archive.append(claudeMd, { name: 'CLAUDE.md' })
+
+    // Generate scaffold project files
+    const pkgJson = JSON.stringify({
+      name: 'partcopy-lp',
+      private: true,
+      version: '1.0.0',
+      type: 'module',
+      scripts: { dev: 'vite', build: 'tsc -b && vite build' },
+      dependencies: {
+        react: '^19.2.4',
+        'react-dom': '^19.2.4'
+      },
+      devDependencies: {
+        '@types/react': '^19.2.14',
+        '@types/react-dom': '^19.2.3',
+        '@vitejs/plugin-react': '^4.3.4',
+        '@tailwindcss/vite': '^4.1.0',
+        tailwindcss: '^4.1.0',
+        typescript: '^5.6.0',
+        vite: '^6.0.0'
+      }
+    }, null, 2)
+
+    archive.append(pkgJson, { name: 'package.json' })
+    archive.append(`<!DOCTYPE html>\n<html lang="ja">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <link rel="preconnect" href="https://fonts.googleapis.com">\n  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">\n  <title>${svcName}</title>\n</head>\n<body>\n  <div id="root"></div>\n  <script type="module" src="/src/index.tsx"></script>\n</body>\n</html>`, { name: 'index.html' })
+    archive.append(`@import 'tailwindcss';\n\nhtml { scroll-behavior: smooth; }\nbody { margin: 0; font-family: 'Noto Sans JP', sans-serif; }\n`, { name: 'src/index.css' })
+    archive.append(`import ReactDOM from 'react-dom/client'\nimport './index.css'\nimport App from './App'\n\nReactDOM.createRoot(document.getElementById('root')!).render(<App />)\n`, { name: 'src/index.tsx' })
+
+    // Generate App.tsx with component imports based on section families
+    const componentNames = sectionDetails.map((s, i) => {
+      const base = s.family.charAt(0).toUpperCase() + s.family.slice(1).replace(/_([a-z])/g, (_, c) => c.toUpperCase())
+      return `${base}Section${i > 0 && sectionDetails.slice(0, i).some(p => p.family === s.family) ? i + 1 : ''}`
+    })
+    const imports = componentNames.map(n => `import ${n} from './components/${n}'`).join('\n')
+    const renders = componentNames.map(n => `      <${n} />`).join('\n')
+    archive.append(`${imports}\n\nexport default function App() {\n  return (\n    <div className="min-h-screen bg-white">\n${renders}\n    </div>\n  )\n}\n`, { name: 'src/App.tsx' })
+
+    // Generate stub components
+    for (const name of componentNames) {
+      archive.append(`export default function ${name}() {\n  return (\n    <section className="py-20 px-6">\n      <div className="max-w-6xl mx-auto">\n        <p className="text-slate-400">TODO: ${name} — screenshots/ の対応するスクショを参考に実装</p>\n      </div>\n    </section>\n  )\n}\n`, { name: `src/components/${name}.tsx` })
+    }
+
+    archive.append(`import { defineConfig } from 'vite'\nimport react from '@vitejs/plugin-react'\nimport tailwindcss from '@tailwindcss/vite'\n\nexport default defineConfig({\n  plugins: [react(), tailwindcss()],\n})\n`, { name: 'vite.config.ts' })
+    archive.append(JSON.stringify({ compilerOptions: { target: 'ES2020', useDefineForClassFields: true, lib: ['ES2020', 'DOM', 'DOM.Iterable'], module: 'ESNext', skipLibCheck: true, moduleResolution: 'bundler', allowImportingTsExtensions: true, isolatedModules: true, moduleDetection: 'force', noEmit: true, jsx: 'react-jsx', strict: true, noUnusedLocals: false, noUnusedParameters: false }, include: ['src'] }, null, 2), { name: 'tsconfig.json' })
+
+    // Placeholder SVG
+    archive.append(`<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400"><rect width="800" height="400" fill="#f1f5f9"/><text x="400" y="200" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="18">画像をここに配置</text></svg>`, { name: 'public/assets/placeholder.svg' })
+
+    await archive.finalize()
+  } catch (err: any) {
+    logger.error('Screenshot ZIP export failed', { error: err.message })
+    if (!res.headersSent) {
+      res.status(500).json({ error: safeErrorMessage(err) })
+    }
+  }
+})
+
 import {
   getQueueStatus,
   appendToQueue,
@@ -3460,6 +3807,469 @@ app.get('/api/reclassify/status', async (_req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message })
   }
+})
+
+// ============================================================
+// Page Clone — fetch高速版 + SPA検知でClaude自動フォールバック
+// ============================================================
+import { clonePageWithClaude } from './claude-cloner.js'
+
+/** fetch版: 高速にHTML/CSS/画像/フォントを取得してインライン化 */
+async function fetchClonePage(url: string) {
+  const pageOrigin = new URL(url).origin
+  const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+
+  // Step 1: HTML取得
+  const htmlRes = await fetch(url, {
+    headers: { 'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml', 'Accept-Language': 'ja,en;q=0.9' },
+    redirect: 'follow'
+  })
+  if (!htmlRes.ok) throw new Error(`ページ取得失敗 (${htmlRes.status})`)
+  let html = await htmlRes.text()
+
+  // Step 2: CSS URL抽出（<link rel="stylesheet">, <link href="...css">, @import）
+  const cssUrls: string[] = []
+  let m: RegExpExecArray | null
+  // <link rel="stylesheet" href="...">
+  const linkRe = /<link[^>]+rel=["']stylesheet["'][^>]*href=["']([^"']+)["']/gi
+  while ((m = linkRe.exec(html)) !== null) {
+    try { cssUrls.push(new URL(m[1], url).href) } catch {}
+  }
+  // <link href="...css">（rel=stylesheetが前にないパターン）
+  const cssHrefRe = /<link[^>]+href=["']([^"']+\.css[^"']*)["']/gi
+  while ((m = cssHrefRe.exec(html)) !== null) {
+    try {
+      const resolved = new URL(m[1], url).href
+      if (!cssUrls.includes(resolved)) cssUrls.push(resolved)
+    } catch {}
+  }
+
+  const cssContents: string[] = []
+  const urlMap = new Map<string, string>()
+
+  // Step 2b: CSSダウンロード + CSS内アセット取得
+  for (const cssUrl of cssUrls) {
+    try {
+      const cssRes = await fetch(cssUrl, { headers: { 'User-Agent': UA, 'Referer': url } })
+      if (!cssRes.ok) continue
+      let cssText = await cssRes.text()
+
+      // @import追跡
+      const importRe = /@import\s+url\(\s*['"]?([^'")]+?)['"]?\s*\)/g
+      while ((m = importRe.exec(cssText)) !== null) {
+        try {
+          const importUrl = new URL(m[1], cssUrl).href
+          if (!cssUrls.includes(importUrl)) {
+            const importRes = await fetch(importUrl, { headers: { 'User-Agent': UA } })
+            if (importRes.ok) cssContents.push(await importRes.text())
+          }
+        } catch {}
+      }
+
+      // CSS内url()アセット（画像・フォント）
+      const urlRe = /url\(\s*['"]?([^'")]+?)['"]?\s*\)/g
+      const cssAssetUrls: string[] = []
+      while ((m = urlRe.exec(cssText)) !== null) {
+        const ref = m[1].trim()
+        if (ref.startsWith('data:') || ref.startsWith('#')) continue
+        try { cssAssetUrls.push(new URL(ref, cssUrl).href) } catch {}
+      }
+
+      // CSS内アセット並列ダウンロード→data URI化
+      const ASSET_BATCH = 15
+      for (let i = 0; i < cssAssetUrls.length; i += ASSET_BATCH) {
+        await Promise.allSettled(cssAssetUrls.slice(i, i + ASSET_BATCH).map(async (assetUrl) => {
+          if (urlMap.has(assetUrl)) return
+          try {
+            const r = await fetch(assetUrl, { headers: { 'User-Agent': UA, 'Referer': cssUrl } })
+            if (!r.ok) return
+            const buf = Buffer.from(await r.arrayBuffer())
+            const ct = r.headers.get('content-type') || 'application/octet-stream'
+            if (buf.length < 512_000) {
+              urlMap.set(assetUrl, `data:${ct.split(';')[0]};base64,${buf.toString('base64')}`)
+            }
+          } catch {}
+        }))
+      }
+
+      // CSS内URLを書き換え
+      cssText = cssText.replace(/url\(\s*['"]?([^'")]+?)['"]?\s*\)/g, (_match, ref) => {
+        if (ref.startsWith('data:') || ref.startsWith('#')) return _match
+        try {
+          const abs = new URL(ref, cssUrl).href
+          return urlMap.has(abs) ? `url(${urlMap.get(abs)})` : `url(${abs})`
+        } catch { return _match }
+      })
+
+      cssContents.push(cssText)
+    } catch {}
+  }
+
+  // Step 3: Google Fontsの処理
+  const gfRe = /href=["'](https:\/\/fonts\.googleapis\.com\/[^"']+)["']/gi
+  while ((m = gfRe.exec(html)) !== null) {
+    try {
+      const gfRes = await fetch(m[1], { headers: { 'User-Agent': UA } })
+      if (gfRes.ok) {
+        let gfCss = await gfRes.text()
+        // フォントファイルURL抽出＆ダウンロード
+        const fontUrlRe = /url\(\s*['"]?(https:\/\/fonts\.gstatic\.com[^'")]+)['"]?\s*\)/g
+        let fm: RegExpExecArray | null
+        while ((fm = fontUrlRe.exec(gfCss)) !== null) {
+          if (urlMap.has(fm[1])) continue
+          try {
+            const fr = await fetch(fm[1])
+            if (fr.ok) {
+              const buf = Buffer.from(await fr.arrayBuffer())
+              const ct = fr.headers.get('content-type') || 'font/woff2'
+              if (buf.length < 512_000) {
+                urlMap.set(fm[1], `data:${ct.split(';')[0]};base64,${buf.toString('base64')}`)
+              }
+            }
+          } catch {}
+        }
+        // フォントURLを書き換え
+        gfCss = gfCss.replace(/url\(\s*['"]?(https:\/\/fonts\.gstatic\.com[^'")]+)['"]?\s*\)/g, (_m, u) => {
+          return urlMap.has(u) ? `url(${urlMap.get(u)})` : _m
+        })
+        cssContents.push(gfCss)
+      }
+    } catch {}
+  }
+
+  // Step 4: HTML内画像 + srcset + og:image + favicon取得
+  const imgUrls: string[] = []
+  // src, poster
+  const srcRe = /(?:src|poster)=["'](https?:\/\/[^"']+)["']/gi
+  while ((m = srcRe.exec(html)) !== null) {
+    if (!urlMap.has(m[1])) imgUrls.push(m[1])
+  }
+  // srcset
+  const srcsetRe = /srcset=["']([^"']+)["']/gi
+  while ((m = srcsetRe.exec(html)) !== null) {
+    for (const part of m[1].split(',')) {
+      const srcsetUrl = part.trim().split(/\s+/)[0]
+      if (/^https?:\/\//.test(srcsetUrl) && !urlMap.has(srcsetUrl)) imgUrls.push(srcsetUrl)
+    }
+  }
+  // og:image, favicon
+  const metaImgRe = /content=["'](https?:\/\/[^"']+\.(?:png|jpg|jpeg|svg|webp|gif|ico)[^"']*)["']/gi
+  while ((m = metaImgRe.exec(html)) !== null) {
+    if (!urlMap.has(m[1])) imgUrls.push(m[1])
+  }
+
+  // 並列ダウンロード（最大20同時、300KB以下のみdata URI化）
+  const IMG_BATCH = 20
+  const uniqueImgs = [...new Set(imgUrls)]
+  for (let i = 0; i < uniqueImgs.length; i += IMG_BATCH) {
+    await Promise.allSettled(uniqueImgs.slice(i, i + IMG_BATCH).map(async (imgUrl) => {
+      try {
+        const r = await fetch(imgUrl, { headers: { 'User-Agent': UA, 'Referer': url } })
+        if (!r.ok) return
+        const buf = Buffer.from(await r.arrayBuffer())
+        const ct = r.headers.get('content-type') || 'image/png'
+        if (buf.length < 300_000) {
+          urlMap.set(imgUrl, `data:${ct.split(';')[0]};base64,${buf.toString('base64')}`)
+        }
+      } catch {}
+    }))
+  }
+
+  // Step 5: <style>タグ内のurl()も書き換え
+  html = html.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (_match, cssBlock) => {
+    let rewritten = cssBlock
+    rewritten = rewritten.replace(/url\(\s*['"]?([^'")]+?)['"]?\s*\)/g, (_m: string, ref: string) => {
+      if (ref.startsWith('data:') || ref.startsWith('#')) return _m
+      try {
+        const abs = new URL(ref, url).href
+        return urlMap.has(abs) ? `url(${urlMap.get(abs)})` : `url(${abs})`
+      } catch { return _m }
+    })
+    return `<style>${rewritten}</style>`
+  })
+
+  // Step 6: HTML書き換え — CSSインライン化
+  html = html.replace(/<link[^>]+rel=["']stylesheet["'][^>]*\/?>/gi, '')
+  html = html.replace(/<link[^>]+href=["'][^"']*\.css[^"']*["'][^>]*\/?>/gi, '')
+  // Google Fontsリンクも除去（インライン化済み）
+  html = html.replace(/<link[^>]+href=["']https:\/\/fonts\.googleapis\.com[^"']*["'][^>]*\/?>/gi, '')
+
+  if (cssContents.length > 0) {
+    const inlineCss = `<style>\n${cssContents.join('\n')}\n</style>`
+    html = html.includes('</head>') ? html.replace('</head>', `${inlineCss}\n</head>`) : inlineCss + html
+  }
+
+  // 画像URLをdata URIに置換
+  for (const [origUrl, dataUri] of urlMap) {
+    html = html.split(origUrl).join(dataUri)
+  }
+
+  // 相対URLを絶対URLに変換
+  html = html.replace(/(src|href|poster|action)=["'](\/[^"']*?)["']/gi, (_match, attr, relPath) => {
+    return `${attr}="${pageOrigin}${relPath}"`
+  })
+
+  // Step 7: 不要スクリプト除去
+  html = html.replace(/<script[^>]*google(?:tagmanager|analytics)[^>]*>[\s\S]*?<\/script>/gi, '')
+  html = html.replace(/<script[^>]*gtag[^>]*>[\s\S]*?<\/script>/gi, '')
+  html = html.replace(/<script[^>]*facebook[^>]*>[\s\S]*?<\/script>/gi, '')
+  html = html.replace(/<script[^>]*fbevents[^>]*>[\s\S]*?<\/script>/gi, '')
+  html = html.replace(/<noscript>[\s\S]*?googletagmanager[\s\S]*?<\/noscript>/gi, '')
+  // preconnect/prefetch除去
+  html = html.replace(/<link[^>]+rel=["'](?:preconnect|prefetch|dns-prefetch)["'][^>]*\/?>/gi, '')
+
+  // Step 8: リンク無効化（ページ内リンクは維持）
+  html = html.replace(/<a\s([^>]*?)href=["'](?!#)([^"']*)["']/gi, '<a $1href="#"')
+
+  return { html, cssUrls, urlMap }
+}
+
+/** SPA判定: body内テキストが少なすぎる or JSフレームワーク依存 */
+function isSpaHtml(html: string): boolean {
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
+  if (!bodyMatch) return true
+  const bodyText = bodyMatch[1].replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+  // テキストが50文字未満 = SPA（JSでレンダリングされてる可能性大）
+  if (bodyText.length < 50) return true
+  // __NEXT_DATA__ or <div id="app"></div> 等のSPAマーカー
+  if (/<div\s+id=["'](?:app|root|__next)["']\s*>\s*<\/div>/i.test(html)) return true
+  return false
+}
+
+app.post('/api/clone-page', async (req, res) => {
+  const { url, forceClaude } = req.body
+  if (!url || typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    res.status(400).json({ error: '有効なURLを指定してください' })
+    return
+  }
+
+  const rlKey = `clone:${url}`
+  if (!rateLimit(rlKey, 3, 60_000)) {
+    res.status(429).json({ error: 'レート制限中です。少し待ってください。' })
+    return
+  }
+
+  try {
+    let method = 'fetch'
+
+    if (forceClaude) {
+      // ユーザーが明示的にClaude版を指定
+      method = 'claude'
+    } else {
+      // まずfetch版を試す
+      const { html, cssUrls, urlMap } = await fetchClonePage(url)
+
+      if (isSpaHtml(html)) {
+        // SPA検知 → Claude版にフォールバック
+        logger.info('SPA detected, falling back to Claude clone', { url })
+        method = 'claude'
+      } else {
+        // fetch版で成功
+        const sizeKb = Math.round(Buffer.byteLength(html, 'utf-8') / 1024)
+        logger.info('Page cloned (fetch)', { url, sizeKb, assets: urlMap.size, cssFiles: cssUrls.length })
+        res.json({
+          html,
+          url,
+          method: 'fetch',
+          stats: {
+            htmlSizeKb: sizeKb,
+            cssFilesInlined: cssUrls.length,
+            assetsEmbedded: urlMap.size
+          }
+        })
+        return
+      }
+    }
+
+    // Claude版
+    if (method === 'claude') {
+      const result = await clonePageWithClaude(url)
+      res.json({
+        html: result.indexHtml,
+        url,
+        method: 'claude',
+        stats: {
+          htmlSizeKb: result.stats.htmlSizeKb,
+          cssFilesInlined: result.stats.cssFiles,
+          assetsEmbedded: result.stats.imageFiles + result.stats.fontFiles,
+          claudeFiles: result.stats.totalFiles
+        }
+      })
+    }
+  } catch (err: any) {
+    logger.error('Page clone failed', { url, error: err.message })
+    res.status(500).json({ error: safeErrorMessage(err) })
+  }
+})
+
+// ============================================================
+// Batch Page Clone — 複数URLを順次クローン、結果をローカル保存
+// ============================================================
+interface BatchCloneStatus {
+  total: number
+  done: number
+  failed: number
+  current: string | null
+  running: boolean
+  results: { url: string; ok: boolean; method?: string; sizeKb?: number; error?: string }[]
+}
+
+const batchCloneStatus: BatchCloneStatus = {
+  total: 0, done: 0, failed: 0, current: null, running: false, results: []
+}
+
+app.post('/api/clone-batch', async (req, res) => {
+  const { urls } = req.body
+  if (!urls || !Array.isArray(urls) || urls.length === 0) {
+    res.status(400).json({ error: 'urls配列を指定してください' })
+    return
+  }
+
+  if (batchCloneStatus.running) {
+    res.status(409).json({ error: 'バッチクローンが既に実行中です', status: batchCloneStatus })
+    return
+  }
+
+  const validUrls = urls
+    .map((u: any) => typeof u === 'string' ? u.trim() : '')
+    .filter((u: string) => /^https?:\/\//i.test(u))
+    .slice(0, 500) // 最大500件
+
+  if (validUrls.length === 0) {
+    res.status(400).json({ error: '有効なURLがありません' })
+    return
+  }
+
+  // Reset status
+  batchCloneStatus.total = validUrls.length
+  batchCloneStatus.done = 0
+  batchCloneStatus.failed = 0
+  batchCloneStatus.current = null
+  batchCloneStatus.running = true
+  batchCloneStatus.results = []
+
+  // Start processing in background
+  res.json({ message: `${validUrls.length}件のクローンを開始します`, status: batchCloneStatus })
+
+  // クローン保存先
+  const { mkdirSync, writeFileSync } = await import('fs')
+  const cloneDir = path.join(process.cwd(), '.partcopy', 'clones', 'batch')
+  mkdirSync(cloneDir, { recursive: true })
+
+  // 順次処理（並列だとサーバー過負荷になるので2件ずつ）
+  const CONCURRENCY = 2
+  for (let i = 0; i < validUrls.length; i += CONCURRENCY) {
+    const batch = validUrls.slice(i, i + CONCURRENCY)
+    await Promise.allSettled(batch.map(async (targetUrl: string) => {
+      batchCloneStatus.current = targetUrl
+      try {
+        const { html, cssUrls, urlMap } = await fetchClonePage(targetUrl)
+
+        if (isSpaHtml(html)) {
+          // SPA → スキップ（Claude版はバッチでは重すぎる）
+          batchCloneStatus.failed++
+          batchCloneStatus.results.push({ url: targetUrl, ok: false, error: 'SPA検知（fetch不可）' })
+          return
+        }
+
+        // ファイル名をドメインから生成
+        const domain = new URL(targetUrl).hostname.replace(/^www\./, '')
+        const safeName = domain.replace(/[^a-z0-9.-]/gi, '_')
+        const filePath = path.join(cloneDir, `${safeName}.html`)
+        writeFileSync(filePath, html, 'utf-8')
+
+        const sizeKb = Math.round(Buffer.byteLength(html, 'utf-8') / 1024)
+        batchCloneStatus.done++
+        batchCloneStatus.results.push({
+          url: targetUrl, ok: true, method: 'fetch', sizeKb
+        })
+
+        logger.info('Batch clone ok', { url: targetUrl, sizeKb, css: cssUrls.length, assets: urlMap.size })
+      } catch (err: any) {
+        batchCloneStatus.failed++
+        batchCloneStatus.results.push({ url: targetUrl, ok: false, error: err.message?.slice(0, 100) })
+        logger.warn('Batch clone failed', { url: targetUrl, error: err.message })
+      }
+    }))
+
+    // 各バッチ間に500ms待機（サーバー負荷軽減）
+    await new Promise(r => setTimeout(r, 500))
+  }
+
+  batchCloneStatus.current = null
+  batchCloneStatus.running = false
+  logger.info('Batch clone complete', {
+    total: batchCloneStatus.total,
+    done: batchCloneStatus.done,
+    failed: batchCloneStatus.failed
+  })
+})
+
+app.get('/api/clone-batch/status', (_req, res) => {
+  res.json(batchCloneStatus)
+})
+
+app.get('/api/clone-batch/url-list', async (req, res) => {
+  const count = Math.min(Math.max(Number(req.query.count) || 100, 1), 500)
+  const { readFileSync, existsSync } = await import('fs')
+
+  // URLリストファイルを順に探す
+  const candidates = ['urls-1000.txt', 'urls-2000-extra.txt', 'urls-extra-2600.txt']
+  let allUrls: string[] = []
+  for (const file of candidates) {
+    const filePath = path.join(process.cwd(), file)
+    if (existsSync(filePath)) {
+      const lines = readFileSync(filePath, 'utf-8').split('\n')
+        .map(l => l.trim())
+        .filter(l => /^https?:\/\//i.test(l))
+      allUrls.push(...lines)
+    }
+  }
+
+  // 既にクローン済みのURLを除外
+  const cloneDir = path.join(process.cwd(), '.partcopy', 'clones', 'batch')
+  let clonedDomains = new Set<string>()
+  try {
+    const { readdirSync } = await import('fs')
+    clonedDomains = new Set(readdirSync(cloneDir).filter(f => f.endsWith('.html')).map(f => f.replace('.html', '')))
+  } catch {}
+
+  const unclonedUrls = allUrls.filter(u => {
+    try {
+      const domain = new URL(u).hostname.replace(/^www\./, '').replace(/[^a-z0-9.-]/gi, '_')
+      return !clonedDomains.has(domain)
+    } catch { return false }
+  })
+
+  res.json({ urls: unclonedUrls.slice(0, count), total: allUrls.length, remaining: unclonedUrls.length })
+})
+
+app.get('/api/clone-batch/list', async (_req, res) => {
+  const { readdirSync, statSync } = await import('fs')
+  const cloneDir = path.join(process.cwd(), '.partcopy', 'clones', 'batch')
+  try {
+    const files = readdirSync(cloneDir)
+      .filter(f => f.endsWith('.html'))
+      .map(f => {
+        const stat = statSync(path.join(cloneDir, f))
+        return { name: f, sizeKb: Math.round(stat.size / 1024), date: stat.mtime.toISOString() }
+      })
+      .sort((a, b) => b.date.localeCompare(a.date))
+    res.json({ files, total: files.length })
+  } catch {
+    res.json({ files: [], total: 0 })
+  }
+})
+
+app.get('/api/clone-batch/file/:name', async (req, res) => {
+  const { readFileSync, existsSync } = await import('fs')
+  const filePath = path.join(process.cwd(), '.partcopy', 'clones', 'batch', req.params.name)
+  if (!existsSync(filePath) || !req.params.name.endsWith('.html')) {
+    res.status(404).json({ error: 'ファイルが見つかりません' })
+    return
+  }
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  res.send(readFileSync(filePath, 'utf-8'))
 })
 
 // ============================================================

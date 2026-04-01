@@ -19,7 +19,22 @@ function LazyVisible({ children, height = 200 }: { children: React.ReactNode; he
   return <div ref={ref} style={{ minHeight: visible ? undefined : height }}>{visible ? children : null}</div>
 }
 
-type SortOption = 'newest' | 'confidence' | 'family' | 'source'
+/** Auto-load trigger: fires onVisible when scrolled into view */
+function LoadMoreTrigger({ onVisible }: { onVisible: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const io = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) onVisible()
+    }, { rootMargin: '300px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [onVisible])
+  return <div ref={ref} style={{ gridColumn: '1 / -1', height: 1 }} />
+}
+
+type SortOption = 'newest' | 'confidence' | 'family' | 'source' | 'quality'
 
 interface Props {
   onAddToCanvas: (section: SourceSection) => void
@@ -41,6 +56,7 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
   const [onlyCta, setOnlyCta] = useState(false)
   const [onlyForm, setOnlyForm] = useState(false)
   const [onlyImages, setOnlyImages] = useState(false)
+  const [hideJunk, setHideJunk] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   // Sync with sidebar category selection
@@ -87,6 +103,7 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
       if (onlyCta) params.set('hasCta', 'true')
       if (onlyForm) params.set('hasForm', 'true')
       if (onlyImages) params.set('hasImages', 'true')
+      if (hideJunk) params.set('hideJunk', 'true')
 
       const response = await fetch(`/api/library?${params.toString()}`)
       if (!response.ok) {
@@ -104,7 +121,7 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [limit, onlyCta, onlyForm, onlyImages, query, selectedFamily, selectedGenre, sortBy])
+  }, [limit, onlyCta, onlyForm, onlyImages, hideJunk, query, selectedFamily, selectedGenre, sortBy])
 
   useEffect(() => {
     fetchMeta()
@@ -140,6 +157,7 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
     setOnlyCta(false)
     setOnlyForm(false)
     setOnlyImages(false)
+    setHideJunk(true)
   }
 
   const totalGenreCount = genres.reduce((sum, genre) => sum + genre.count, 0)
@@ -150,6 +168,7 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
     onlyCta ||
     onlyForm ||
     onlyImages ||
+    !hideJunk ||
     sortBy !== 'newest' ||
     limit !== 24
   )
@@ -203,6 +222,7 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
               onChange={event => setSortBy(event.target.value as SortOption)}
             >
               <option value="newest">新着順</option>
+              <option value="quality">品質順</option>
               <option value="confidence">信頼度順</option>
               <option value="family">種別順</option>
               <option value="source">サイト順</option>
@@ -229,6 +249,9 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
             </button>
             <button className={`feature-toggle ${onlyForm ? 'active' : ''}`} onClick={() => setOnlyForm(prev => !prev)}>
               FORM
+            </button>
+            <button className={`feature-toggle ${hideJunk ? 'active' : ''}`} onClick={() => setHideJunk(prev => !prev)} title="低品質セクションを非表示">
+              ゴミ除外
             </button>
             <span className="parts-results-count">{sections.length}件表示</span>
             {hasActiveFilters && (
@@ -275,9 +298,9 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
                 {section.thumbnail_storage_path ? (
                   <img src={`/assets/${section.thumbnail_storage_path}`} alt={section.block_family} loading="lazy" />
                 ) : section.htmlUrl ? (
-                  <LazyVisible height={200}>
+                  <LazyVisible height={320}>
                     <div className="library-card-live">
-                      <SourcePreviewFrame htmlUrl={section.htmlUrl} maxHeight={300} />
+                      <SourcePreviewFrame htmlUrl={section.htmlUrl} maxHeight={500} />
                     </div>
                   </LazyVisible>
                 ) : (
@@ -293,6 +316,13 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
                     {familyLabelMap[section.block_family] || section.block_family}
                   </span>
                 </div>
+                {section.designScore != null && (
+                  <div className="library-card-score" style={{
+                    background: section.designScore >= 70 ? '#22c55e' : section.designScore >= 40 ? '#f59e0b' : '#ef4444'
+                  }}>
+                    {section.designScore}
+                  </div>
+                )}
                 {hoveredId === section.id && (
                   <div className="library-card-hover">
                     <button className="library-card-add" onClick={() => onAddToCanvas(section)}>+ Canvasに追加</button>
@@ -319,14 +349,7 @@ export function Library({ onAddToCanvas, initialFamily }: Props) {
             </div>
           ))}
           {!loading && !error && hasMore && (
-            <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '16px 0' }}>
-              <button
-                className="inline-reset-btn"
-                onClick={() => setLimit(prev => prev + 60)}
-              >
-                さらに読み込む
-              </button>
-            </div>
+            <LoadMoreTrigger onVisible={() => setLimit(prev => prev + 60)} />
           )}
         </div>
       </div>

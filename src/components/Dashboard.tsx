@@ -19,6 +19,108 @@ export function Dashboard({ sections, canvas, onNavigate, onExtract, extractLoad
   const [bulkUrls, setBulkUrls] = useState('')
   const [bulkAdding, setBulkAdding] = useState(false)
 
+  // Page clone state
+  const [cloneUrl, setCloneUrl] = useState('')
+  const [cloning, setCloning] = useState(false)
+  const [cloneResult, setCloneResult] = useState<{ html: string; stats: any; method: string } | null>(null)
+  const [cloneError, setCloneError] = useState<string | null>(null)
+
+  // Batch clone state
+  const [batchStatus, setBatchStatus] = useState<any>(null)
+  const [batchStarting, setBatchStarting] = useState(false)
+  const [clonedFiles, setClonedFiles] = useState<{ name: string; sizeKb: number; date: string }[]>([])
+
+  const fetchClonedFiles = async () => {
+    try {
+      const res = await fetch('/api/clone-batch/list')
+      if (res.ok) {
+        const data = await res.json()
+        setClonedFiles(data.files || [])
+      }
+    } catch {}
+  }
+
+  const handleClone = async (forceClaude = false) => {
+    const url = cloneUrl.trim()
+    if (!url || !/^https?:\/\//i.test(url)) return
+    setCloning(true)
+    setCloneError(null)
+    setCloneResult(null)
+    try {
+      const res = await fetch('/api/clone-page', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, forceClaude })
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'エラーが発生しました' }))
+        throw new Error(err.error || `Error ${res.status}`)
+      }
+      const data = await res.json()
+      setCloneResult({ html: data.html, stats: data.stats, method: data.method || 'fetch' })
+    } catch (err: any) {
+      setCloneError(err.message || 'クローンに失敗しました')
+    } finally {
+      setCloning(false)
+    }
+  }
+
+  // Batch clone
+  const handleBatchClone = async (count: number) => {
+    setBatchStarting(true)
+    try {
+      // urls-1000.txtを読み込んでcount件分送る
+      const listRes = await fetch('/api/clone-batch/url-list?count=' + count)
+      let urls: string[] = []
+      if (listRes.ok) {
+        const data = await listRes.json()
+        urls = data.urls || []
+      }
+      if (urls.length === 0) {
+        // フォールバック: bulkUrlsから取得
+        alert('URLリストが取得できませんでした')
+        return
+      }
+      await fetch('/api/clone-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls })
+      })
+    } catch {} finally {
+      setBatchStarting(false)
+    }
+  }
+
+  // Batch status polling + fetch file list when done
+  useEffect(() => {
+    fetchClonedFiles()
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch('/api/clone-batch/status')
+        if (res.ok) {
+          const data = await res.json()
+          const wasPreviouslyRunning = batchStatus?.running
+          setBatchStatus(data)
+          // 完了時にファイルリスト更新
+          if (wasPreviouslyRunning && !data.running) {
+            fetchClonedFiles()
+          }
+        }
+      } catch {}
+    }, 2000)
+    return () => clearInterval(poll)
+  }, [batchStatus?.running])
+
+  const handleDownloadClone = () => {
+    if (!cloneResult) return
+    const blob = new Blob([cloneResult.html], { type: 'text/html' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `clone-${new URL(cloneUrl).hostname}.html`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
   const fetchStatus = async () => {
     try {
       const res = await fetch('/api/crawl-queue')
@@ -253,6 +355,133 @@ export function Dashboard({ sections, canvas, onNavigate, onExtract, extractLoad
           <p className="dash-autocrawl-done">完了済み: {crawlDone}件</p>
         )}
       </div>
+
+      {/* Page Clone */}
+      <div className="dash-section-header">
+        <h2>PAGE CLONE</h2>
+        <p>ページを丸ごとコピー（HTML + CSS + 画像 + フォント）</p>
+      </div>
+      <div className="dash-autocrawl-panel">
+        <div className="dash-autocrawl-section">
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="text"
+              className="dash-extract-input"
+              placeholder="https://example.com — クローンしたいページのURLを入力"
+              value={cloneUrl}
+              onChange={e => setCloneUrl(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleClone() }}
+              disabled={cloning}
+              style={{ flex: 1 }}
+            />
+            <button
+              className="dash-extract-btn"
+              onClick={() => handleClone(false)}
+              disabled={cloning || !cloneUrl.trim()}
+            >
+              {cloning ? 'クローン中...' : 'クローン'}
+            </button>
+            <button
+              className="dash-autocrawl-btn-sm"
+              onClick={() => handleClone(true)}
+              disabled={cloning || !cloneUrl.trim()}
+              title="Claude CLIでクローン（SPA対応・低速）"
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              Claude版
+            </button>
+          </div>
+          {cloneError && <p style={{ color: '#ef4444', fontSize: 13, marginTop: 8 }}>{cloneError}</p>}
+          {cloneResult && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+                <span style={{ fontSize: 13, color: '#22c55e', fontWeight: 600 }}>
+                  クローン完了（{cloneResult.method === 'claude' ? 'Claude' : 'fetch'}） — {cloneResult.stats.htmlSizeKb}KB / CSS {cloneResult.stats.cssFilesInlined}件 / アセット {cloneResult.stats.assetsEmbedded}件
+                </span>
+                <button className="dash-autocrawl-btn-sm" onClick={handleDownloadClone}>HTMLダウンロード</button>
+                <button className="dash-autocrawl-btn-sm" onClick={() => {
+                  const w = window.open('', '_blank')
+                  if (w) { w.document.write(cloneResult!.html); w.document.close() }
+                }}>プレビュー</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Batch Clone */}
+      <div className="dash-section-header">
+        <h2>BATCH CLONE</h2>
+        <p>URLリストから一括クローン</p>
+      </div>
+      <div className="dash-autocrawl-panel">
+        <div className="dash-autocrawl-section">
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              className="dash-extract-btn"
+              onClick={() => handleBatchClone(100)}
+              disabled={batchStarting || batchStatus?.running}
+            >
+              {batchStatus?.running ? '実行中...' : '100件クローン開始'}
+            </button>
+            <button
+              className="dash-autocrawl-btn-sm"
+              onClick={() => handleBatchClone(50)}
+              disabled={batchStarting || batchStatus?.running}
+            >
+              50件
+            </button>
+            <button
+              className="dash-autocrawl-btn-sm"
+              onClick={() => handleBatchClone(20)}
+              disabled={batchStarting || batchStatus?.running}
+            >
+              20件
+            </button>
+          </div>
+
+          {batchStatus && (batchStatus.running || batchStatus.done > 0) && (
+            <div style={{ marginTop: 12 }}>
+              <div className="dash-crawl-header">
+                <span className={`dash-crawl-title${batchStatus.running ? ' active' : ''}`}>
+                  {batchStatus.running ? '● クローン中' : '○ 完了'}
+                </span>
+                <span className="dash-crawl-progress-text">
+                  {batchStatus.done}/{batchStatus.total} 成功 / {batchStatus.failed} 失敗
+                  {batchStatus.total > 0 && ` (${Math.round(((batchStatus.done + batchStatus.failed) / batchStatus.total) * 100)}%)`}
+                </span>
+              </div>
+              <div className="dash-crawl-bar">
+                <div className="dash-crawl-bar-fill" style={{ width: `${batchStatus.total > 0 ? Math.round(((batchStatus.done + batchStatus.failed) / batchStatus.total) * 100) : 0}%` }} />
+              </div>
+              {batchStatus.current && <p className="dash-crawl-url">処理中: {batchStatus.current}</p>}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Cloned files list */}
+      {clonedFiles.length > 0 && (
+        <>
+          <div className="dash-section-header">
+            <h2>CLONED PAGES</h2>
+            <p>{clonedFiles.length}件のクローン済みページ</p>
+          </div>
+          <div className="dash-site-grid" style={{ maxHeight: 400, overflowY: 'auto' }}>
+            {clonedFiles.map(f => (
+              <div key={f.name} className="dash-site-row" style={{ cursor: 'pointer' }}>
+                <span
+                  className="dash-site-domain dash-link"
+                  onClick={() => window.open(`/api/clone-batch/file/${f.name}`, '_blank')}
+                >
+                  {f.name.replace('.html', '')}
+                </span>
+                <span className="dash-site-count">{f.sizeKb}KB</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       {/* Category grid (STOCK DESIGN style) */}
       <div className="dash-section-header">

@@ -1995,14 +1995,27 @@ body {
   display: block;
   width: 100%;
   height: auto;
-  max-height: 220px;
+  max-height: 320px;
   object-fit: cover;
   object-position: top center;
 }
 
 .library-card-live {
-  height: 220px;
+  max-height: 320px;
   overflow: hidden;
+  pointer-events: none;
+  border: 2px dashed #d0d0d0;
+  border-radius: 4px;
+  position: relative;
+}
+.library-card-live::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(transparent, rgba(248,248,248,0.95));
   pointer-events: none;
 }
 
@@ -2049,6 +2062,19 @@ body {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+}
+
+.library-card-score {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 8px;
+  line-height: 1.4;
+  opacity: 0.9;
 }
 
 .library-card-category {

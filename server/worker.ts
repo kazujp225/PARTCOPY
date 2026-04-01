@@ -38,6 +38,7 @@ import { canonicalizeSection } from './canonicalizer.js'
 import { parseSectionDOM } from './dom-parser.js'
 import { logger } from './logger.js'
 import { startAutoCrawler } from './auto-crawler.js'
+import { analyzeCssSophistication } from './design-tokens.js'
 import { startFastCrawler } from './fast-crawler.js'
 
 const WORKER_ID = `worker-${process.pid}`
@@ -490,6 +491,15 @@ async function processOnePage(
     // ========== Phase 4: Classify + Store each section ==========
     let sectionCount = 0
 
+    // Compute CSS sophistication once per page (shared across all sections)
+    let pageCssSophistication = 0
+    try {
+      const cssBundle = await readStoredText(STORAGE_BUCKETS.RAW_HTML, `${site.id}/${job.id}/bundle.css`)
+      if (cssBundle) {
+        pageCssSophistication = analyzeCssSophistication(cssBundle).score
+      }
+    } catch {}
+
     // サブページではnavigation/footerはスキップ（ホームページで既に取得済み）
     const skipFamiliesOnSubpage = new Set(['navigation', 'footer'])
 
@@ -561,7 +571,7 @@ async function processOnePage(
         block_variant: canonical?.variant,
         classifier_type: 'heuristic',
         classifier_confidence: classification.confidence,
-        features_jsonb: section.features,
+        features_jsonb: { ...section.features, cssSophistication: pageCssSophistication },
         text_summary: section.textContent.slice(0, 500),
         layout_signature: layoutSig,
         image_count: section.features.imageCount,
