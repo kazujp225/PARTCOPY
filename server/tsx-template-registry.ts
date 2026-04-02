@@ -1,12 +1,10 @@
 /**
- * TSX Template Registry
+ * @deprecated V2 では structure-preserving compiler が本命。
+ * このファイルは最終 fallback としてのみ残す。
+ * 標準 export パイプラインからは使わない。
  *
+ * TSX Template Registry (DEPRECATED)
  * family/variant ごとの Tailwind TSX テンプレートを管理する。
- * テンプレートは CanonicalSection の contentSlots + PageTheme を受け取り、
- * 編集可能な TSX 文字列を返す。
- *
- * AI はテンプレートの「新発明」をしない。
- * 既存 variant の安全なマッピングのみ行う。
  */
 
 import type { CanonicalSection, CanonicalContentSlot, PageTheme } from './canonical-types.js'

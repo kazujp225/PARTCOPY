@@ -64,7 +64,7 @@ import {
   type ExportSectionArtifact,
   type GetArtifactFn,
 } from './export-screenshot-zip.js'
-import { streamTsxZipExport, type TsxZipExportInput } from './export-tsx-zip.js'
+import { streamTsxZipExport, type SectionMeta } from './export-tsx-zip.js'
 import { canonicalizeSectionFull, extractStyleFingerprint, extractFeaturesFromHtml } from './canonicalizer.js'
 import type { CanonicalSection } from './canonical-types.js'
 
@@ -2551,7 +2551,7 @@ app.post('/api/export/screenshot-zip', async (req, res) => {
 })
 
 // ============================================================
-// TSX ZIP Export (canonical + theme based)
+// TSX ZIP Export (V2: structure-preserving compiler)
 // ============================================================
 app.post('/api/export/tsx-zip', async (req, res) => {
   const { sectionIds, projectName, companyName, serviceDescription } = req.body as {
@@ -2567,10 +2567,7 @@ app.post('/api/export/tsx-zip', async (req, res) => {
   }
 
   try {
-    const canonicalSections: CanonicalSection[] = []
-    const cssTexts: string[] = []
-    const htmlTexts = new Map<string, string>()
-    const screenshotBuffers = new Map<string, Buffer>()
+    const sectionMetas: SectionMeta[] = []
 
     for (const sectionId of sectionIds) {
       const prepared = await prepareSectionRender(sectionId)
@@ -2585,7 +2582,7 @@ app.post('/api/export/tsx-zip', async (req, res) => {
       if (HAS_SUPABASE) {
         const { data: section } = await supabaseAdmin
           .from('source_sections')
-          .select('id, block_family, block_variant, thumbnail_storage_path, text_summary, features_jsonb, source_pages(url, title), source_sites(normalized_domain)')
+          .select('id, block_family, thumbnail_storage_path, text_summary, source_pages(url, title), source_sites(normalized_domain)')
           .eq('id', sectionId)
           .single()
         blockFamily = section?.block_family || blockFamily
@@ -2605,50 +2602,28 @@ app.post('/api/export/tsx-zip', async (req, res) => {
         }
       }
 
-      // Extract real structure from prepared HTML for accurate canonicalization
-      const extracted = extractFeaturesFromHtml(prepared.html, textSummary)
-      const detectedSection = {
-        tagName: 'section',
-        html: prepared.html,
-        textContent: extracted.textContent,
-        classTokens: extracted.classTokens,
-        computedStyles: extracted.computedStyles,
-        features: extracted.features,
-      } as any
+      // Load screenshot
+      let screenshotBuffer: Buffer | undefined
+      if (thumbnailPath) {
+        const file = await readBucketFile(STORAGE_BUCKETS.SECTION_THUMBNAILS, thumbnailPath)
+          || await readBucketFile(STORAGE_BUCKETS.RAW_HTML, thumbnailPath)
+        if (file) screenshotBuffer = file.buffer
+      }
 
-      const canonical = canonicalizeSectionFull(detectedSection, blockFamily, {
+      sectionMetas.push({
         sectionId,
+        blockFamily,
+        html: prepared.html,
         css: prepared.css,
-        screenshotPath: thumbnailPath,
+        screenshotBuffer,
         sourceUrl,
         sourceDomain,
+        screenshotPath: thumbnailPath,
+        textSummary,
       })
-
-      if (canonical) {
-        canonicalSections.push(canonical)
-        cssTexts.push(prepared.css)
-        htmlTexts.set(sectionId, prepared.html)
-
-        // Load screenshot
-        if (thumbnailPath) {
-          const file = await readBucketFile(STORAGE_BUCKETS.SECTION_THUMBNAILS, thumbnailPath)
-            || await readBucketFile(STORAGE_BUCKETS.RAW_HTML, thumbnailPath)
-          if (file) {
-            screenshotBuffers.set(sectionId, file.buffer)
-          }
-        }
-      }
     }
 
-    await streamTsxZipExport({
-      sections: canonicalSections,
-      cssTexts,
-      htmlTexts,
-      screenshotBuffers,
-      projectName,
-      companyName,
-      serviceDescription,
-    }, res)
+    await streamTsxZipExport({ sectionMetas, projectName, companyName, serviceDescription }, res)
   } catch (err: any) {
     logger.error('TSX ZIP export failed', { error: err.message })
     if (!res.headersSent) {

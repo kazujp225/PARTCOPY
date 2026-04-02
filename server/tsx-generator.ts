@@ -1,9 +1,9 @@
 /**
- * TSX Generator
+ * @deprecated V2 では emit-tsx-from-ir.ts が本命。
+ * このファイルは generic template 方式の最終 fallback としてのみ残す。
  *
+ * TSX Generator (DEPRECATED)
  * CanonicalSection + PageTheme → TSX/Tailwind ファイルを生成する。
- * テンプレートレジストリから適切なテンプレートを取得し、
- * contentSlots の情報を流し込む。
  */
 
 import type { CanonicalSection, PageTheme } from './canonical-types.js'
