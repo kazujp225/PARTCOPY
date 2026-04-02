@@ -1,14 +1,15 @@
 /**
- * Structure IR Compiler
+ * Structure IR Compiler (V2 Fix)
  *
  * raw HTML → StructureNode tree
  * 元 DOM の親子構造を保持したまま、意味のあるノードツリーに変換する。
- * 汎用テンプレートへの丸め込みは行わない。
+ *
+ * Fix 1: root 選定の厳密化（sibling 保持）
+ * Fix 2: class, id, data-attr, aria-attr を attrs に保持
  */
 import * as cheerio from 'cheerio'
 import type { StructureNode, StructureKind, StyleNode, ContentSlot, SectionIR } from './structure-ir.js'
 
-// Use `any` for cheerio element types to avoid version-specific type issues
 type CheerioEl = cheerio.Cheerio<any>
 
 let nodeCounter = 0
@@ -25,37 +26,40 @@ export function resetNodeCounter() {
 // ============================================================
 
 const TAG_KIND_MAP: Record<string, StructureKind> = {
-  img: 'image',
-  picture: 'image',
-  svg: 'icon',
-  video: 'image',
+  img: 'image', picture: 'image', svg: 'icon', video: 'image',
   button: 'button',
-  ul: 'list',
-  ol: 'list',
-  li: 'list-item',
-  form: 'form',
-  input: 'input',
-  textarea: 'textarea',
-  select: 'input',
-  hr: 'divider',
-  br: 'divider',
+  ul: 'list', ol: 'list', li: 'list-item',
+  form: 'form', input: 'input', textarea: 'textarea', select: 'input',
+  hr: 'divider', br: 'divider',
 }
 
 const HEADING_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
 const INLINE_TAGS = new Set(['span', 'strong', 'em', 'b', 'i', 'u', 'small', 'sub', 'sup', 'mark', 'abbr', 'time', 'code'])
 const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'template', 'iframe', 'object', 'embed', 'link', 'meta'])
 
+// Attrs to preserve (Fix 2)
+const SKIP_ATTR_PREFIXES = ['on']  // event handlers
+const SKIP_ATTRS = new Set(['style', 'srcdoc', 'srcset'])
+
+function shouldKeepAttr(name: string): boolean {
+  if (SKIP_ATTRS.has(name)) return false
+  for (const prefix of SKIP_ATTR_PREFIXES) {
+    if (name.startsWith(prefix) && name.length > prefix.length && name[prefix.length] >= 'A' && name[prefix.length] <= 'z') {
+      return false  // onclick, onload, etc.
+    }
+  }
+  return true
+}
+
 // ============================================================
 // Kind inference
 // ============================================================
 
 function inferKind(el: CheerioEl, $: cheerio.CheerioAPI, tag: string): StructureKind {
-  // Direct tag mapping
   if (TAG_KIND_MAP[tag]) return TAG_KIND_MAP[tag]
   if (HEADING_TAGS.has(tag)) return 'text'
   if (INLINE_TAGS.has(tag)) return 'inline'
 
-  // Anchor with button-like classes or short text
   if (tag === 'a') {
     const cls = (el.attr('class') || '').toLowerCase()
     const text = el.text().trim()
@@ -65,42 +69,28 @@ function inferKind(el: CheerioEl, $: cheerio.CheerioAPI, tag: string): Structure
     return 'inline'
   }
 
-  // Label
   if (tag === 'label') return 'text'
   if (tag === 'p') return 'text'
-
-  // Table → treat as grid
   if (tag === 'table' || tag === 'tbody') return 'grid'
   if (tag === 'tr') return 'columns'
   if (tag === 'td' || tag === 'th') return 'container'
 
-  // Check class hints for layout
   const cls = (el.attr('class') || '').toLowerCase()
   const style = (el.attr('style') || '').toLowerCase()
 
-  // Grid
   if (/display:\s*grid/i.test(style) || /\bgrid\b/.test(cls)) return 'grid'
-  // Flex row
   if (/display:\s*flex/i.test(style) && /flex-direction:\s*row/i.test(style)) return 'columns'
   if (/\bflex\b/.test(cls) && /\brow\b/.test(cls)) return 'columns'
-  // Flex (default column)
   if (/display:\s*flex/i.test(style)) return 'stack'
-
-  // Card-like repeated pattern
-  if (/card|tile|item/i.test(cls)) return 'card'
-
-  // Section / article / main / header / footer / nav
+  if (/card|tile/i.test(cls)) return 'card'
   if (['section', 'article', 'main', 'header', 'footer', 'nav', 'aside'].includes(tag)) return 'section'
+  if (/badge|chip/i.test(cls) && el.text().trim().length < 30) return 'badge'
 
-  // Badge
-  if (/badge|tag|label|chip/i.test(cls) && el.text().trim().length < 30) return 'badge'
-
-  // Default container
   return 'container'
 }
 
 // ============================================================
-// Style extraction
+// Style extraction (inline style → StyleNode)
 // ============================================================
 
 const STYLE_PROPS: (keyof StyleNode)[] = [
@@ -144,11 +134,8 @@ function extractInlineStyle(el: CheerioEl, nodeId: string): StyleNode | null {
 // ============================================================
 
 function extractSlot(
-  el: CheerioEl,
-  tag: string,
-  kind: StructureKind,
-  nodeId: string,
-  slots: ContentSlot[]
+  el: CheerioEl, tag: string, kind: StructureKind,
+  nodeId: string, slots: ContentSlot[]
 ) {
   if (kind === 'text' && HEADING_TAGS.has(tag)) {
     const text = el.text().replace(/\s+/g, ' ').trim()
@@ -157,7 +144,6 @@ function extractSlot(
     }
     return
   }
-
   if (kind === 'text' && tag === 'p') {
     const text = el.text().replace(/\s+/g, ' ').trim()
     if (text && text.length > 5) {
@@ -165,7 +151,6 @@ function extractSlot(
     }
     return
   }
-
   if (kind === 'button') {
     const text = el.text().replace(/\s+/g, ' ').trim()
     if (text && text.length <= 50) {
@@ -173,28 +158,42 @@ function extractSlot(
     }
     return
   }
-
   if (kind === 'image') {
     const alt = el.attr('alt') || ''
     if (alt) {
       slots.push({ key: `img_${slots.filter(s => s.kind === 'imageAlt').length}`, kind: 'imageAlt', originalValue: alt, nodeId })
     }
-    return
   }
 }
 
 // ============================================================
-// Main compiler
+// Attr extraction (Fix 2: preserve class/id/data-*/aria-*)
+// ============================================================
+
+function extractAttrs(el: CheerioEl): Record<string, string> | undefined {
+  const rawAttrs = (el.get(0) as any)?.attribs
+  if (!rawAttrs) return undefined
+
+  const attrs: Record<string, string> = {}
+  for (const [name, val] of Object.entries(rawAttrs)) {
+    if (!shouldKeepAttr(name)) continue
+    if (name === 'style') continue  // handled by Style IR
+    attrs[name] = String(val)
+  }
+
+  return Object.keys(attrs).length > 0 ? attrs : undefined
+}
+
+// ============================================================
+// Node compiler
 // ============================================================
 
 const MAX_DEPTH = 15
-const MAX_CHILDREN = 80
+const MAX_CHILDREN = 100
 
 function compileNode(
-  el: CheerioEl,
-  $: cheerio.CheerioAPI,
-  styles: StyleNode[],
-  slots: ContentSlot[],
+  el: CheerioEl, $: cheerio.CheerioAPI,
+  styles: StyleNode[], slots: ContentSlot[],
   depth: number
 ): StructureNode | null {
   if (depth > MAX_DEPTH) return null
@@ -215,59 +214,28 @@ function compileNode(
   // Extract content slot
   extractSlot(el, tag, kind, id, slots)
 
-  // Build attrs (safe subset)
-  const attrs: Record<string, string> = {}
-  const src = el.attr('src')
-  const alt = el.attr('alt')
-  const href = el.attr('href')
-  const type = el.attr('type')
-  const placeholder = el.attr('placeholder')
-  const name = el.attr('name')
-  if (src) attrs.src = src
-  if (alt) attrs.alt = alt
-  if (href) attrs.href = href
-  if (type) attrs.type = type
-  if (placeholder) attrs.placeholder = placeholder
-  if (name) attrs.name = name
-
-  // Text-only leaf nodes
-  if (kind === 'text' || kind === 'badge' || kind === 'inline') {
-    const directText = el.contents().toArray()
-      .filter(n => n.type === 'text')
-      .map(n => (n as any).data || '')
-      .join('')
-      .replace(/\s+/g, ' ')
-      .trim()
-
-    // If it's a simple text node with no child elements, capture text
-    if (el.children().length === 0) {
-      const text = el.text().replace(/\s+/g, ' ').trim()
-      if (text) {
-        return {
-          id,
-          kind,
-          htmlTag: tag,
-          textContent: text,
-          attrs: Object.keys(attrs).length > 0 ? attrs : undefined,
-        }
-      }
-      return null // empty node
-    }
-  }
+  // Extract ALL relevant attrs (Fix 2)
+  const attrs = extractAttrs(el)
 
   // Self-closing / leaf elements
   if (['img', 'input', 'textarea', 'hr', 'br', 'video'].includes(tag)) {
-    return {
-      id,
-      kind,
-      htmlTag: tag,
-      attrs: Object.keys(attrs).length > 0 ? attrs : undefined,
-    }
+    return { id, kind, htmlTag: tag, attrs }
   }
 
-  // SVG: treat as icon leaf
+  // SVG: treat as icon leaf, preserve class
   if (tag === 'svg') {
-    return { id, kind: 'icon', htmlTag: 'svg' }
+    return { id, kind: 'icon', htmlTag: 'svg', attrs }
+  }
+
+  // Text-only leaf nodes
+  if ((kind === 'text' || kind === 'badge' || kind === 'inline') && el.children().length === 0) {
+    const text = el.text().replace(/\s+/g, ' ').trim()
+    if (text) {
+      return { id, kind, htmlTag: tag, textContent: text, attrs }
+    }
+    // Keep empty elements that have class (might be styled)
+    if (attrs?.class) return { id, kind, htmlTag: tag, attrs }
+    return null
   }
 
   // Recurse into children
@@ -279,49 +247,56 @@ function compileNode(
     if (childNode) children.push(childNode)
   }
 
-  // If container has no meaningful children, check for text
+  // Container with no meaningful children
   if (children.length === 0) {
     const text = el.text().replace(/\s+/g, ' ').trim()
     if (text && text.length > 0) {
-      return {
-        id,
-        kind,
-        htmlTag: tag,
-        textContent: text.slice(0, 500),
-        attrs: Object.keys(attrs).length > 0 ? attrs : undefined,
-      }
+      return { id, kind, htmlTag: tag, textContent: text.slice(0, 500), attrs }
     }
-    // Skip completely empty containers unless they have background/style
-    if (!styleNode && !el.attr('class')) return null
+    // Keep if has class or style (might be a styled empty block like spacer/bg)
+    if (styleNode || attrs?.class) {
+      return { id, kind, htmlTag: tag, attrs }
+    }
+    return null
   }
 
-  // Detect card-group: container with 3+ repeated same-kind children
+  // Detect card-group
   if (children.length >= 3 && kind === 'container') {
     const kindCounts = new Map<string, number>()
-    for (const c of children) {
-      kindCounts.set(c.kind, (kindCounts.get(c.kind) || 0) + 1)
-    }
-    for (const [k, count] of kindCounts) {
+    for (const c of children) kindCounts.set(c.kind, (kindCounts.get(c.kind) || 0) + 1)
+    for (const [, count] of kindCounts) {
       if (count >= 3 && count >= children.length * 0.6) {
-        return {
-          id,
-          kind: 'card-group',
-          htmlTag: tag,
-          children,
-          attrs: Object.keys(attrs).length > 0 ? attrs : undefined,
-        }
+        return { id, kind: 'card-group', htmlTag: tag, children, attrs }
       }
     }
   }
 
   return {
-    id,
-    kind,
-    htmlTag: tag,
+    id, kind, htmlTag: tag,
     children: children.length > 0 ? children : undefined,
     textContent: children.length === 0 ? el.text().replace(/\s+/g, ' ').trim().slice(0, 500) || undefined : undefined,
-    attrs: Object.keys(attrs).length > 0 ? attrs : undefined,
+    attrs,
   }
+}
+
+// ============================================================
+// Root selection (Fix 1: handle multiple siblings)
+// ============================================================
+
+function findRootCandidates($: cheerio.CheerioAPI): CheerioEl[] {
+  // Try body first
+  const body = $('body')
+  const parent: CheerioEl = body.length > 0 ? body : ($.root() as any)
+
+  const candidates: CheerioEl[] = []
+  parent.children().each((_: any, child: any) => {
+    if ((child as any).type !== 'tag') return
+    const tag = ((child as any).tagName || '').toLowerCase()
+    if (SKIP_TAGS.has(tag)) return
+    candidates.push($(child))
+  })
+
+  return candidates
 }
 
 // ============================================================
@@ -343,14 +318,31 @@ export function compileHtmlToStructureIR(
   const styles: StyleNode[] = []
   const slots: ContentSlot[] = []
 
-  // Find the root section element
-  const root = $.root().children().first()
-  const rootNode = compileNode(root, $, styles, slots, 0)
+  // Fix 1: proper root selection
+  const candidates = findRootCandidates($)
 
-  const structure: StructureNode = rootNode || {
-    id: nextId(),
-    kind: 'section',
-    htmlTag: 'div',
+  let structure: StructureNode
+
+  if (candidates.length === 0) {
+    // Empty: synthetic section
+    structure = { id: nextId(), kind: 'section', htmlTag: 'div' }
+  } else if (candidates.length === 1) {
+    // Single root
+    const rootNode = compileNode(candidates[0], $, styles, slots, 0)
+    structure = rootNode || { id: nextId(), kind: 'section', htmlTag: 'div' }
+  } else {
+    // Multiple siblings: synthetic wrapper to preserve all
+    const children: StructureNode[] = []
+    for (const candidate of candidates) {
+      const node = compileNode(candidate, $, styles, slots, 0)
+      if (node) children.push(node)
+    }
+    structure = {
+      id: nextId(),
+      kind: 'section',
+      htmlTag: 'div',
+      children: children.length > 0 ? children : undefined,
+    }
   }
 
   // Ensure root is 'section' kind

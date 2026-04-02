@@ -1,9 +1,10 @@
 /**
- * TSX + Scoped CSS Emitter (V2)
+ * TSX + Scoped CSS Emitter (V2 Fix)
  *
  * SectionIR → TSX + CSS Module
- * 元 HTML の構造を保持したまま、編集可能な TSX と section-scoped CSS を出力する。
- * 汎用テンプレートへの丸め込みは行わない。
+ *
+ * Fix 2: 元 class を保持し、IR class と結合
+ * Fix 3: .scoped.css import 対応
  */
 import type { StructureNode, StyleNode, SectionIR, ContentSlot } from './structure-ir.js'
 
@@ -13,10 +14,7 @@ import type { StructureNode, StyleNode, SectionIR, ContentSlot } from './structu
 
 let classCounter = 0
 function resetClassCounter() { classCounter = 0 }
-
-function nextClass(hint: string): string {
-  return `${hint}_${++classCounter}`
-}
+function nextClass(hint: string): string { return `${hint}_${++classCounter}` }
 
 // ============================================================
 // Style → CSS string
@@ -37,51 +35,39 @@ function styleNodeToCss(style: StyleNode, className: string): string {
 }
 
 // ============================================================
-// HTML tag → JSX safe mapping
+// JSX helpers
 // ============================================================
 
 const VOID_ELEMENTS = new Set(['img', 'input', 'br', 'hr', 'meta', 'link', 'source', 'embed', 'wbr', 'col', 'area', 'base', 'track', 'param'])
 
 const ATTR_RENAMES: Record<string, string> = {
-  class: 'className',
-  for: 'htmlFor',
-  tabindex: 'tabIndex',
-  readonly: 'readOnly',
-  maxlength: 'maxLength',
-  colspan: 'colSpan',
-  rowspan: 'rowSpan',
-  autocomplete: 'autoComplete',
-  crossorigin: 'crossOrigin',
+  class: 'className', for: 'htmlFor', tabindex: 'tabIndex',
+  readonly: 'readOnly', maxlength: 'maxLength',
+  colspan: 'colSpan', rowspan: 'rowSpan',
+  autocomplete: 'autoComplete', crossorigin: 'crossOrigin',
+  'accept-charset': 'acceptCharset', 'http-equiv': 'httpEquiv',
+  accesskey: 'accessKey', cellpadding: 'cellPadding', cellspacing: 'cellSpacing',
 }
 
 function escapeJsxText(text: string): string {
-  return text.replace(/[{}<>]/g, c => {
-    if (c === '{') return '&#123;'
-    if (c === '}') return '&#125;'
-    if (c === '<') return '&lt;'
-    if (c === '>') return '&gt;'
-    return c
-  })
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/{/g, '&#123;')
+    .replace(/}/g, '&#125;')
 }
 
 // ============================================================
-// Content slot references
-// ============================================================
-
-function findSlotForNode(nodeId: string, slots: ContentSlot[]): ContentSlot | undefined {
-  return slots.find(s => s.nodeId === nodeId)
-}
-
-// ============================================================
-// Node → JSX emitter
+// Emit context
 // ============================================================
 
 interface EmitContext {
   componentName: string
-  styles: Map<string, StyleNode>  // nodeId → StyleNode
+  styles: Map<string, StyleNode>
   slots: ContentSlot[]
   cssRules: string[]
-  classMap: Map<string, string>  // nodeId → className
+  classMap: Map<string, string>  // nodeId → generated className
   indent: number
 }
 
@@ -90,7 +76,6 @@ function getOrCreateClass(nodeId: string, kind: string, ctx: EmitContext): strin
   if (!cls) {
     cls = nextClass(kind)
     ctx.classMap.set(nodeId, cls)
-
     const style = ctx.styles.get(nodeId)
     if (style) {
       const rule = styleNodeToCss(style, cls)
@@ -100,28 +85,99 @@ function getOrCreateClass(nodeId: string, kind: string, ctx: EmitContext): strin
   return cls
 }
 
+// ============================================================
+// Attribute building (Fix 2: class merge)
+// ============================================================
+
+function buildAttrs(node: StructureNode, ctx: EmitContext): string {
+  const parts: string[] = []
+
+  // Class merge: original class + IR-generated class
+  const origClass = node.attrs?.class || ''
+  const hasStyle = ctx.styles.has(node.id)
+  const genClass = hasStyle ? getOrCreateClass(node.id, node.kind, ctx) : null
+
+  if (genClass && origClass) {
+    // Both: merge
+    parts.push(`className={\`\${styles.${genClass}} ${origClass.replace(/`/g, '')}\`}`)
+  } else if (genClass) {
+    parts.push(`className={styles.${genClass}}`)
+  } else if (origClass) {
+    parts.push(`className="${origClass.replace(/"/g, '&quot;')}"`)
+  }
+
+  // Other attrs
+  if (node.attrs) {
+    for (let [key, val] of Object.entries(node.attrs)) {
+      if (key === 'class') continue  // handled above
+      if (key.startsWith('on')) continue  // event handlers
+
+      // Neutralize links
+      if (key === 'href') val = '#'
+
+      // JSX rename
+      const jsxKey = ATTR_RENAMES[key] || (key.includes('-') ? key : key)
+      // aria-* and data-* keep kebab-case
+
+      parts.push(`${jsxKey}="${val.replace(/"/g, '&quot;')}"`)
+    }
+  }
+
+  return parts.length > 0 ? ' ' + parts.join(' ') : ''
+}
+
+// ============================================================
+// Tag mapping
+// ============================================================
+
+const SAFE_TAGS = new Set([
+  'div', 'span', 'p', 'a', 'section', 'article', 'main', 'header', 'footer', 'nav', 'aside',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'ul', 'ol', 'li', 'dl', 'dt', 'dd',
+  'img', 'picture', 'source', 'video', 'audio', 'figure', 'figcaption',
+  'button', 'form', 'input', 'textarea', 'select', 'option', 'label',
+  'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th',
+  'details', 'summary', 'blockquote', 'cite', 'time', 'pre', 'code',
+  'strong', 'em', 'small', 'sub', 'sup', 'mark', 'abbr',
+  'br', 'hr',
+])
+
+function mapTag(node: StructureNode): string {
+  if (node.htmlTag && SAFE_TAGS.has(node.htmlTag.toLowerCase())) {
+    return node.htmlTag.toLowerCase()
+  }
+  // Fallback to div for unknown tags
+  return 'div'
+}
+
+// ============================================================
+// Node emitter
+// ============================================================
+
 function emitNode(node: StructureNode, ctx: EmitContext): string {
   const pad = '  '.repeat(ctx.indent)
   const tag = mapTag(node)
-  const cls = ctx.styles.has(node.id) ? getOrCreateClass(node.id, node.kind, ctx) : null
 
-  // Slot reference
-  const slot = findSlotForNode(node.id, ctx.slots)
+  // SVG → span with original class
+  if (node.kind === 'icon') {
+    const origClass = node.attrs?.class
+    if (origClass) {
+      return `${pad}<span className="${origClass}" aria-hidden="true" />`
+    }
+    return `${pad}<span aria-hidden="true" />`
+  }
 
-  // Self-closing elements
+  // Void elements
   if (VOID_ELEMENTS.has(tag)) {
-    const attrs = buildAttrs(node, cls, ctx)
+    const attrs = buildAttrs(node, ctx)
     return `${pad}<${tag}${attrs} />`
   }
 
-  // SVG icon placeholder
-  if (node.kind === 'icon') {
-    return `${pad}<span className={styles.${cls || 'icon'}} aria-hidden="true" />`
-  }
+  // Leaf text node with slot
+  const slot = ctx.slots.find(s => s.nodeId === node.id)
 
-  // Leaf text node
   if (!node.children || node.children.length === 0) {
-    const attrs = buildAttrs(node, cls, ctx)
+    const attrs = buildAttrs(node, ctx)
     const text = node.textContent || ''
 
     if (slot && (slot.kind === 'heading' || slot.kind === 'text' || slot.kind === 'buttonLabel' || slot.kind === 'linkLabel')) {
@@ -136,7 +192,7 @@ function emitNode(node: StructureNode, ctx: EmitContext): string {
   }
 
   // Container with children
-  const attrs = buildAttrs(node, cls, ctx)
+  const attrs = buildAttrs(node, ctx)
   const childCtx = { ...ctx, indent: ctx.indent + 1 }
   const children = node.children
     .map(c => emitNode(c, childCtx))
@@ -150,95 +206,6 @@ function emitNode(node: StructureNode, ctx: EmitContext): string {
   return `${pad}<${tag}${attrs}>\n${children}\n${pad}</${tag}>`
 }
 
-function mapTag(node: StructureNode): string {
-  // Use original HTML tag if available
-  if (node.htmlTag) {
-    const tag = node.htmlTag.toLowerCase()
-    // Map non-JSX-safe tags
-    if (tag === 'main' || tag === 'header' || tag === 'footer' || tag === 'nav' ||
-        tag === 'article' || tag === 'aside' || tag === 'section' ||
-        tag === 'div' || tag === 'span' || tag === 'p' || tag === 'a' ||
-        tag === 'img' || tag === 'button' || tag === 'form' ||
-        tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'option' ||
-        tag === 'label' || tag === 'ul' || tag === 'ol' || tag === 'li' ||
-        tag === 'table' || tag === 'tbody' || tag === 'thead' || tag === 'tr' || tag === 'td' || tag === 'th' ||
-        tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6' ||
-        tag === 'figure' || tag === 'figcaption' || tag === 'picture' || tag === 'source' ||
-        tag === 'video' || tag === 'audio' || tag === 'details' || tag === 'summary' ||
-        tag === 'dl' || tag === 'dt' || tag === 'dd' ||
-        tag === 'blockquote' || tag === 'cite' || tag === 'time' ||
-        tag === 'strong' || tag === 'em' || tag === 'small' || tag === 'sub' || tag === 'sup' ||
-        tag === 'br' || tag === 'hr' || tag === 'mark' || tag === 'abbr' || tag === 'code' || tag === 'pre') {
-      return tag
-    }
-    return 'div'
-  }
-
-  // Kind → tag fallback
-  switch (node.kind) {
-    case 'section': return 'section'
-    case 'container': return 'div'
-    case 'stack': return 'div'
-    case 'inline': return 'span'
-    case 'grid': return 'div'
-    case 'columns': return 'div'
-    case 'text': return 'p'
-    case 'image': return 'img'
-    case 'button': return 'button'
-    case 'list': return 'ul'
-    case 'list-item': return 'li'
-    case 'card-group': return 'div'
-    case 'card': return 'div'
-    case 'form': return 'form'
-    case 'input': return 'input'
-    case 'textarea': return 'textarea'
-    case 'divider': return 'hr'
-    case 'badge': return 'span'
-    case 'icon': return 'span'
-    case 'raw': return 'div'
-    default: return 'div'
-  }
-}
-
-function buildAttrs(node: StructureNode, className: string | null, ctx: EmitContext): string {
-  const parts: string[] = []
-
-  if (className) {
-    parts.push(`className={styles.${className}}`)
-  }
-
-  if (node.attrs) {
-    for (let [key, val] of Object.entries(node.attrs)) {
-      // Skip event handlers
-      if (key.startsWith('on')) continue
-      // Skip dangerous attrs
-      if (key === 'srcdoc' || key === 'srcset') continue
-
-      // Rename HTML attrs to JSX
-      const jsxKey = ATTR_RENAMES[key] || key
-
-      // Neutralize links
-      if (key === 'href') {
-        val = '#'
-      }
-
-      // Replace external images with placeholder
-      if (key === 'src' && /^https?:\/\//i.test(val)) {
-        val = '/assets/placeholder.svg'
-      }
-
-      parts.push(`${jsxKey}="${val.replace(/"/g, '&quot;')}"`)
-    }
-  }
-
-  // Root section attrs
-  if (node.kind === 'section' && ctx.indent === 1) {
-    // data-partcopy-section is added at the wrapper level
-  }
-
-  return parts.length > 0 ? ' ' + parts.join(' ') : ''
-}
-
 // ============================================================
 // Public API
 // ============================================================
@@ -246,20 +213,18 @@ function buildAttrs(node: StructureNode, className: string | null, ctx: EmitCont
 export interface EmitResult {
   tsx: string
   css: string
-  contentKeys: Record<string, string>  // slot key → original value
+  contentKeys: Record<string, string>
 }
 
 export function emitTsxFromIR(
   ir: SectionIR,
-  componentName: string
+  componentName: string,
+  scopeClass?: string
 ): EmitResult {
   resetClassCounter()
 
-  // Build style lookup
   const styleMap = new Map<string, StyleNode>()
-  for (const s of ir.styles) {
-    styleMap.set(s.nodeId, s)
-  }
+  for (const s of ir.styles) styleMap.set(s.nodeId, s)
 
   const ctx: EmitContext = {
     componentName,
@@ -272,29 +237,37 @@ export function emitTsxFromIR(
 
   const bodyJsx = emitNode(ir.structure, ctx)
 
-  // Build content keys
+  // Content keys
   const contentKeys: Record<string, string> = {}
   for (const slot of ir.contentSlots) {
     contentKeys[slot.key] = slot.originalValue
   }
 
-  // TSX file
+  // Root className: merge module root + scope class
+  const rootClassParts: string[] = ['styles.root']
+  if (scopeClass) rootClassParts.push(`'${scopeClass}'`)
+  const rootClassName = rootClassParts.length === 1
+    ? `{${rootClassParts[0]}}`
+    : `{[${rootClassParts.join(', ')}].join(' ')}`
+
+  // TSX file (Fix 3: import .scoped.css)
   const tsx = `import { content } from '../../content/site-content'
 import styles from './${componentName}.module.css'
+import './${componentName}.scoped.css'
 
 export default function ${componentName}() {
   return (
-    <section className={styles.root} data-partcopy-section="${ir.sourceSectionId}" data-layout-lock="true">
+    <section className=${rootClassName} data-partcopy-section="${ir.sourceSectionId}" data-layout-lock="true">
 ${bodyJsx}
     </section>
   )
 }
 `
 
-  // CSS file: root wrapper + all extracted styles
-  const rootRule = `.root {\n  /* section root */\n}`
+  // CSS Module (minimal: root + inline-style derived rules)
+  const rootRule = `.root {\n  /* section wrapper */\n}`
   const allRules = [rootRule, ...ctx.cssRules].join('\n\n')
-  const css = `/* ${componentName} — auto-generated from source HTML */\n/* Do not rename classes — they are referenced in the TSX */\n\n${allRules}\n`
+  const css = `/* ${componentName} — CSS Module */\n\n${allRules}\n`
 
   return { tsx, css, contentKeys }
 }
