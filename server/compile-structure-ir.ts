@@ -39,7 +39,7 @@ const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'template', 'iframe', 
 
 // Attrs to preserve (Fix 2)
 const SKIP_ATTR_PREFIXES = ['on']  // event handlers
-const SKIP_ATTRS = new Set(['style', 'srcdoc', 'srcset'])
+const SKIP_ATTRS = new Set(['style', 'srcdoc'])
 
 function shouldKeepAttr(name: string): boolean {
   if (SKIP_ATTRS.has(name)) return false

@@ -2626,7 +2626,14 @@ app.post('/api/export/tsx-zip', async (req, res) => {
       })
     }
 
-    await streamTsxZipExport({ sectionMetas, projectName, companyName, serviceDescription }, res)
+    await streamTsxZipExport({
+      sectionMetas,
+      projectName,
+      companyName,
+      serviceDescription,
+      loadAsset: loadExportAssetSource,
+      buildAssetFileName: buildExportAssetFileName,
+    }, res)
   } catch (err: any) {
     logger.error('TSX ZIP export failed', { error: err.message })
     if (!res.headersSent) {

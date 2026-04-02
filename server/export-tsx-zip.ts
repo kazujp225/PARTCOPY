@@ -28,11 +28,29 @@ import {
 // Types
 // ============================================================
 
+/**
+ * Asset loader callback — injected from index.ts to access storage/fetch.
+ * Returns null if asset cannot be resolved.
+ */
+export type LoadAssetFn = (sourceUrl: string) => Promise<{
+  key: string
+  fileNameHint: string
+  buffer: Buffer
+  contentType: string
+} | null>
+
+/**
+ * Asset filename builder callback — injected from index.ts.
+ */
+export type BuildAssetFileNameFn = (key: string, sourceUrl: string, contentType: string, fileNameHint?: string | null) => string
+
 export interface TsxZipExportInput {
   sectionMetas: SectionMeta[]
   projectName?: string
   companyName?: string
   serviceDescription?: string
+  loadAsset: LoadAssetFn
+  buildAssetFileName: BuildAssetFileNameFn
 }
 
 export interface SectionMeta {
@@ -286,7 +304,7 @@ export async function streamTsxZipExport(
   input: TsxZipExportInput,
   res: express.Response
 ) {
-  const { sectionMetas } = input
+  const { sectionMetas, loadAsset, buildAssetFileName } = input
 
   if (sectionMetas.length === 0) {
     res.status(404).json({ error: 'No sections to export' })
@@ -295,24 +313,86 @@ export async function streamTsxZipExport(
 
   const projectName = (input.projectName || input.companyName || 'PARTCOPY Export').trim() || 'PARTCOPY Export'
 
-  // 1. Compile each section to IR, then emit TSX + CSS
+  // ====== Phase A: Collect & resolve all assets across all sections ======
+  const allAssetUrls = new Set<string>()
+  for (const meta of sectionMetas) {
+    for (const url of collectHtmlAssetUrls(meta.html)) allAssetUrls.add(url)
+    for (const url of collectCssAssetUrls(meta.scopedCss + '\n' + meta.fontFaceCss.join('\n'))) allAssetUrls.add(url)
+  }
+
+  // Remove data URIs
+  for (const url of allAssetUrls) {
+    if (url.startsWith('data:')) allAssetUrls.delete(url)
+  }
+
+  // Load all assets in parallel (with concurrency limit)
+  const assetMap = new Map<string, string>()     // original URL → local filename
+  const assetBuffers = new Map<string, Buffer>()  // local filename → buffer
+  let resolvedCount = 0
+  let unresolvedCount = 0
+
+  const assetEntries = [...allAssetUrls]
+  const BATCH_SIZE = 10
+
+  for (let batch = 0; batch < assetEntries.length; batch += BATCH_SIZE) {
+    const slice = assetEntries.slice(batch, batch + BATCH_SIZE)
+    const results = await Promise.all(slice.map(async (url) => {
+      try {
+        const loaded = await loadAsset(url)
+        if (loaded) {
+          const fileName = buildAssetFileName(loaded.key, url, loaded.contentType, loaded.fileNameHint)
+          return { url, fileName, buffer: loaded.buffer }
+        }
+      } catch {}
+      return { url, fileName: null, buffer: null }
+    }))
+
+    for (const r of results) {
+      if (r.fileName && r.buffer) {
+        assetMap.set(r.url, r.fileName)
+        assetBuffers.set(r.fileName, r.buffer)
+        resolvedCount++
+      } else {
+        unresolvedCount++
+      }
+    }
+  }
+
+  // Build replacer function
+  const assetReplacer = (url: string) => {
+    const local = assetMap.get(url)
+    return local ? `/assets/${local}` : undefined
+  }
+
+  // ====== Phase B: Rewrite HTML & CSS, then compile IR ======
   const usedNames = new Set<string>()
   const compiled: {
     componentName: string
     tsx: string
     css: string
+    scopedCssContent: string
     contentKeys: Record<string, string>
     meta: SectionMeta
     ir: SectionIR
     screenshotFile: string
   }[] = []
 
+  let htmlRewriteCount = 0
+  let cssRewriteCount = 0
+
   for (let i = 0; i < sectionMetas.length; i++) {
     const meta = sectionMetas[i]
     const componentName = buildComponentName(meta.blockFamily, i + 1, usedNames)
 
-    // Compile HTML → Structure IR
-    const ir = compileHtmlToStructureIR(meta.html, {
+    // Rewrite HTML asset URLs BEFORE IR compilation
+    const rewrittenHtml = rewriteHtmlAssetUrls(meta.html, assetReplacer)
+    // Count rewrites
+    const htmlUrlsBefore = collectHtmlAssetUrls(meta.html)
+    const htmlUrlsAfter = collectHtmlAssetUrls(rewrittenHtml)
+    htmlRewriteCount += htmlUrlsBefore.filter(u => assetMap.has(u)).length
+
+    // Compile rewritten HTML → Structure IR
+    const ir = compileHtmlToStructureIR(rewrittenHtml, {
       sectionId: meta.sectionId,
       family: meta.blockFamily,
       screenshotPath: meta.screenshotPath,
@@ -320,8 +400,23 @@ export async function streamTsxZipExport(
       sourceDomain: meta.sourceDomain,
     })
 
-    // Emit TSX + CSS from IR (pass scopeClass for scoped CSS merge)
+    // Emit TSX + CSS from IR
     const emitted = emitTsxFromIR(ir, componentName, meta.scopeClass)
+
+    // Rewrite scoped CSS URLs
+    const rewrittenScopedCss = rewriteCssUrls(meta.scopedCss, assetReplacer)
+    const rewrittenFontFace = meta.fontFaceCss.map(ff => rewriteCssUrls(ff, assetReplacer))
+    cssRewriteCount += collectCssAssetUrls(meta.scopedCss + '\n' + meta.fontFaceCss.join('\n'))
+      .filter(u => assetMap.has(u)).length
+
+    const scopedCssContent = [
+      `/* ${componentName} — source scoped CSS */`,
+      `/* Scope class: ${meta.scopeClass} */`,
+      '',
+      ...rewrittenFontFace,
+      '',
+      rewrittenScopedCss,
+    ].join('\n')
 
     const prefix = String(i + 1).padStart(2, '0')
     const familySlug = meta.blockFamily.replace(/[^a-z0-9_-]+/gi, '-')
@@ -331,6 +426,7 @@ export async function streamTsxZipExport(
       componentName,
       tsx: emitted.tsx,
       css: emitted.css,
+      scopedCssContent,
       contentKeys: emitted.contentKeys,
       meta,
       ir,
@@ -485,55 +581,12 @@ npm run dev
   archive.append(generateThemeCss(), { name: 'src/theme/theme.css' })
   archive.append(siteContent, { name: 'src/content/site-content.ts' })
 
-  // Section components + CSS Modules + Scoped CSS + Assets
-  const assetMap = new Map<string, string>()  // original URL → export filename
-  const assetBuffers = new Map<string, Buffer>()  // export filename → buffer
-
+  // Section components + CSS Modules + Scoped CSS
   for (const c of compiled) {
-    // Collect asset URLs from HTML and CSS
-    const htmlAssets = collectHtmlAssetUrls(c.meta.html)
-    const cssAssets = collectCssAssetUrls(c.meta.scopedCss + '\n' + c.meta.fontFaceCss.join('\n'))
-    const allAssetUrls = [...new Set([...htmlAssets, ...cssAssets])]
-
-    // Map assets to local filenames (deterministic)
-    for (const url of allAssetUrls) {
-      if (assetMap.has(url)) continue
-      if (url.startsWith('data:')) continue
-      // Create deterministic local filename
-      const basename = url.split('/').pop()?.split('?')[0] || 'asset'
-      const ext = basename.includes('.') ? '' : '.bin'
-      const hash = Buffer.from(url).toString('base64url').slice(0, 10)
-      const safeName = basename.replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 40)
-      const localName = `${hash}-${safeName}${ext}`
-      assetMap.set(url, localName)
-    }
-
-    // Rewrite asset URLs in HTML (for scoped CSS and TSX reference)
-    const assetReplacer = (url: string) => {
-      const local = assetMap.get(url)
-      return local ? `/assets/${local}` : undefined
-    }
-
-    // Rewrite scoped CSS URLs
-    let rewrittenScopedCss = rewriteCssUrls(c.meta.scopedCss, assetReplacer)
-    let rewrittenFontFace = c.meta.fontFaceCss.map(ff => rewriteCssUrls(ff, assetReplacer))
-
-    // Build scoped CSS file content
-    const scopedCssContent = [
-      `/* ${c.componentName} — source scoped CSS */`,
-      `/* Scope class: ${c.meta.scopeClass} */`,
-      '',
-      ...rewrittenFontFace,
-      '',
-      rewrittenScopedCss,
-    ].join('\n')
-
-    // Write files
     archive.append(c.tsx, { name: `src/components/sections/${c.componentName}.tsx` })
     archive.append(c.css, { name: `src/components/sections/${c.componentName}.module.css` })
-    archive.append(scopedCssContent, { name: `src/components/sections/${c.componentName}.scoped.css` })
+    archive.append(c.scopedCssContent, { name: `src/components/sections/${c.componentName}.scoped.css` })
 
-    // Screenshots
     if (c.meta.screenshotBuffer) {
       archive.append(c.meta.screenshotBuffer, { name: `screenshots/${c.screenshotFile}` })
     } else {
@@ -541,22 +594,29 @@ npm run dev
     }
   }
 
-  // Add collected assets to ZIP
-  for (const [url, localName] of assetMap) {
-    // Try to fetch asset data (stored or remote)
-    // We write placeholder for assets we can't resolve at export time
-    // The asset loading is handled by the server's existing pipeline
-    // For now, record the mapping in specs for manual resolution
+  // Add resolved asset files to ZIP
+  for (const [fileName, buffer] of assetBuffers) {
+    archive.append(buffer, { name: `public/assets/${fileName}` })
   }
 
-  // Asset map for reference
-  if (assetMap.size > 0) {
-    const assetIndex = JSON.stringify(
-      Object.fromEntries([...assetMap.entries()].slice(0, 200)),
-      null, 2
-    )
-    archive.append(assetIndex, { name: 'specs/asset-map.json' })
+  // Asset map for reference + stats
+  const assetStats = {
+    totalUrls: allAssetUrls.size,
+    resolved: resolvedCount,
+    unresolved: unresolvedCount,
+    htmlRewriteCount,
+    cssRewriteCount,
+    files: Object.fromEntries([...assetMap.entries()].slice(0, 500)),
   }
+  archive.append(JSON.stringify(assetStats, null, 2), { name: 'specs/asset-map.json' })
+
+  logger.info('TSX ZIP export complete', {
+    sections: compiled.length,
+    assetsResolved: resolvedCount,
+    assetsUnresolved: unresolvedCount,
+    htmlRewrites: htmlRewriteCount,
+    cssRewrites: cssRewriteCount,
+  })
 
   await archive.finalize()
 }
