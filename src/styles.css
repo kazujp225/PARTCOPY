@@ -1373,6 +1373,12 @@ body {
   color: white;
 }
 
+.canvas-lock-badge {
+  font-size: 11px;
+  opacity: 0.5;
+  cursor: default;
+}
+
 .canvas-block-source {
   font-size: 11px;
   color: var(--text3);

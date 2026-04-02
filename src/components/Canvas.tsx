@@ -177,6 +177,7 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onDesignEdit, onExp
                   <span className="canvas-block-badge" style={{ background: FAMILY_COLORS[item.section.block_family] || '#94a3b8' }}>
                     {item.section.block_family}
                   </span>
+                  <span className="canvas-lock-badge" title="レイアウト固定 (strict モード)">🔒</span>
                   <span className="canvas-block-source">
                     {item.section.source_sites?.normalized_domain || ''}
                   </span>

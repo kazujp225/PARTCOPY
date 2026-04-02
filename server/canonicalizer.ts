@@ -6,6 +6,7 @@
  * Phase 1: hero, feature, cta, faq, contact, footer の6種
  * Phase 2: StyleFingerprint + CanonicalSection 昇格サポート
  */
+import * as cheerio from 'cheerio'
 import type { DetectedSection } from './section-detector.js'
 import type { StyleFingerprint, CanonicalSection, CanonicalConstraints, CanonicalContentSlot } from './canonical-types.js'
 import { DEFAULT_STYLE_FINGERPRINT, DEFAULT_CONSTRAINTS, promoteToCanonicalSection } from './canonical-types.js'
@@ -314,6 +315,112 @@ export function extractStyleFingerprint(css: string, html?: string): StyleFinger
     : 'plain'
 
   return { colorDensity, typographyTone, cornerStyle, shadowLevel, backgroundType }
+}
+
+// ============================================================
+// HTML → DetectedSection features extraction (cheerio ベース)
+// ============================================================
+
+/**
+ * prepared.html から DetectedSection 互換の features と classTokens を抽出する。
+ * server/index.ts の export/canonicalize で minimalSection を埋めるために使う。
+ */
+export function extractFeaturesFromHtml(html: string, textSummary?: string): {
+  features: DetectedSection['features']
+  classTokens: string[]
+  textContent: string
+  computedStyles: DetectedSection['computedStyles']
+} {
+  const $ = cheerio.load(html || '')
+
+  // Heading texts
+  const headingTexts: string[] = []
+  $('h1, h2, h3, h4, h5, h6').each((_, el) => {
+    const text = $(el).text().replace(/\s+/g, ' ').trim()
+    if (text && text.length < 200) headingTexts.push(text)
+  })
+
+  // Counts
+  const imageCount = $('img, picture, svg.hero-img, [role="img"]').length
+  const buttonCount = $('button, input[type="submit"], input[type="button"], a[class*="btn"], a[class*="button"], a[class*="cta"]').length
+  const linkCount = $('a').length
+  const formCount = $('form').length
+  const listItemCount = $('li').length
+  const hasSvg = $('svg').length > 0
+
+  // Card-like items (common repeated structures)
+  const cardSelectors = [
+    '[class*="card"]', '[class*="item"]', '[class*="col-"]',
+    '.grid > div', '.flex > div', '[class*="feature"]',
+    '[class*="plan"]', '[class*="price"]', '[class*="testimonial"]'
+  ]
+  let cardCount = 0
+  for (const sel of cardSelectors) {
+    const count = $(sel).length
+    if (count >= 2) {
+      cardCount = Math.max(cardCount, count)
+      break
+    }
+  }
+
+  // Child count (direct children of root)
+  const root = $.root().children().first()
+  const childCount = root.children().length
+
+  // Text content
+  const textContent = textSummary || $.text().replace(/\s+/g, ' ').trim().slice(0, 1000)
+
+  // Class tokens (from root and direct children)
+  const classTokens: string[] = []
+  const collectClasses = (el: any) => {
+    const cls = $(el).attr('class')
+    if (cls) {
+      classTokens.push(...cls.split(/\s+/).filter(Boolean))
+    }
+  }
+  root.find('*').slice(0, 30).each((_, el) => collectClasses(el))
+  collectClasses(root)
+
+  // Repeated child pattern
+  let repeatedChildPattern = false
+  if (childCount >= 3) {
+    const tagNames = root.children().toArray().map(el => $(el).prop('tagName')?.toLowerCase())
+    const firstTag = tagNames[0]
+    if (firstTag && tagNames.filter(t => t === firstTag).length >= tagNames.length * 0.7) {
+      repeatedChildPattern = true
+    }
+  }
+
+  // Pseudo computedStyles from CSS class hints
+  const allClasses = classTokens.join(' ')
+  const textAlign = /text-center|text-align.*center|mx-auto/i.test(allClasses) ? 'center'
+    : /text-right/i.test(allClasses) ? 'right' : 'left'
+  const hasDarkBg = /bg-dark|bg-black|bg-gray-9|bg-slate-9|dark/i.test(allClasses)
+  const backgroundColor = hasDarkBg ? 'rgb(30, 30, 30)' : 'transparent'
+
+  return {
+    features: {
+      headingTexts,
+      imageCount,
+      buttonCount,
+      linkCount,
+      formCount,
+      listItemCount,
+      cardCount,
+      childCount,
+      textLength: textContent.length,
+      hasSvg,
+      repeatedChildPattern,
+    } as any,
+    classTokens,
+    textContent,
+    computedStyles: {
+      textAlign,
+      backgroundColor,
+      fontSize: '16px',
+      padding: '0',
+    } as any,
+  }
 }
 
 // ============================================================

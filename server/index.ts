@@ -65,7 +65,7 @@ import {
   type GetArtifactFn,
 } from './export-screenshot-zip.js'
 import { streamTsxZipExport, type TsxZipExportInput } from './export-tsx-zip.js'
-import { canonicalizeSectionFull, extractStyleFingerprint } from './canonicalizer.js'
+import { canonicalizeSectionFull, extractStyleFingerprint, extractFeaturesFromHtml } from './canonicalizer.js'
 import type { CanonicalSection } from './canonical-types.js'
 
 /**
@@ -2569,6 +2569,7 @@ app.post('/api/export/tsx-zip', async (req, res) => {
   try {
     const canonicalSections: CanonicalSection[] = []
     const cssTexts: string[] = []
+    const htmlTexts = new Map<string, string>()
     const screenshotBuffers = new Map<string, Buffer>()
 
     for (const sectionId of sectionIds) {
@@ -2604,29 +2605,18 @@ app.post('/api/export/tsx-zip', async (req, res) => {
         }
       }
 
-      // Build a minimal DetectedSection for canonicalization
-      const minimalSection = {
+      // Extract real structure from prepared HTML for accurate canonicalization
+      const extracted = extractFeaturesFromHtml(prepared.html, textSummary)
+      const detectedSection = {
         tagName: 'section',
         html: prepared.html,
-        textContent: textSummary || '',
-        classTokens: [] as string[],
-        computedStyles: { textAlign: 'left', backgroundColor: 'transparent', fontSize: '16px', padding: '0' },
-        features: {
-          headingTexts: [] as string[],
-          imageCount: 0,
-          buttonCount: 0,
-          linkCount: 0,
-          formCount: 0,
-          listItemCount: 0,
-          cardCount: 0,
-          childCount: 0,
-          textLength: textSummary?.length || 0,
-          hasSvg: false,
-          repeatedChildPattern: false,
-        },
+        textContent: extracted.textContent,
+        classTokens: extracted.classTokens,
+        computedStyles: extracted.computedStyles,
+        features: extracted.features,
       } as any
 
-      const canonical = canonicalizeSectionFull(minimalSection, blockFamily, {
+      const canonical = canonicalizeSectionFull(detectedSection, blockFamily, {
         sectionId,
         css: prepared.css,
         screenshotPath: thumbnailPath,
@@ -2637,6 +2627,7 @@ app.post('/api/export/tsx-zip', async (req, res) => {
       if (canonical) {
         canonicalSections.push(canonical)
         cssTexts.push(prepared.css)
+        htmlTexts.set(sectionId, prepared.html)
 
         // Load screenshot
         if (thumbnailPath) {
@@ -2652,6 +2643,7 @@ app.post('/api/export/tsx-zip', async (req, res) => {
     await streamTsxZipExport({
       sections: canonicalSections,
       cssTexts,
+      htmlTexts,
       screenshotBuffers,
       projectName,
       companyName,
@@ -2700,28 +2692,17 @@ app.post('/api/sections/:sectionId/canonicalize', async (req, res) => {
       }
     }
 
-    const minimalSection = {
+    const extracted = extractFeaturesFromHtml(prepared.html)
+    const detectedSection = {
       tagName: 'section',
       html: prepared.html,
-      textContent: '',
-      classTokens: [],
-      computedStyles: { textAlign: 'left', backgroundColor: 'transparent', fontSize: '16px', padding: '0' },
-      features: {
-        headingTexts: [],
-        imageCount: 0,
-        buttonCount: 0,
-        linkCount: 0,
-        formCount: 0,
-        listItemCount: 0,
-        cardCount: 0,
-        childCount: 0,
-        textLength: 0,
-        hasSvg: false,
-        repeatedChildPattern: false,
-      },
+      textContent: extracted.textContent,
+      classTokens: extracted.classTokens,
+      computedStyles: extracted.computedStyles,
+      features: extracted.features,
     } as any
 
-    const canonical = canonicalizeSectionFull(minimalSection, blockFamily, {
+    const canonical = canonicalizeSectionFull(detectedSection, blockFamily, {
       sectionId,
       css: prepared.css,
       sourceUrl,

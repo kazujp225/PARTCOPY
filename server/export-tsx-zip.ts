@@ -32,7 +32,8 @@ import { generatePageTheme, applyStrictUnification } from './unify-theme.js'
 export interface TsxZipExportInput {
   sections: CanonicalSection[]
   cssTexts: string[]
-  screenshotBuffers: Map<string, Buffer>  // sectionId → PNG buffer
+  htmlTexts: Map<string, string>         // rawSectionId → prepared HTML (for specs)
+  screenshotBuffers: Map<string, Buffer>  // rawSectionId → PNG buffer
   projectName?: string
   companyName?: string
   serviceDescription?: string
@@ -129,16 +130,30 @@ Tailwind CSS + React + TypeScript で構成されています。
 - 会社名: ${companyName}
 - サービス概要: ${serviceDescription}
 
-## 重要ルール
+## 統一化モード: strict（全セクション layoutLocked）
 
-1. \`layoutLocked: true\` のセクションは構造変更禁止（要素順・カラム数・背景構造を変えない）。
-2. 文言変更はまず \`src/content/site-content.ts\` で行う。
-3. 色や余白の全体調整は \`src/theme/theme.tokens.ts\` で行う。
-4. 元サイトのリンクは復元しない。
-5. 著作権に触れうる文言や画像は差し替える。
-6. スクリーンショットとの差分が大きい再設計は禁止。
-7. 新規下層ページを作る場合は既存 theme を継承する。
-8. \`npm run validate\` でレイアウト違反がないか検証できる。
+このエクスポートは **strict モード** で生成されています。
+全セクションの \`layoutLocked\` が \`true\` です。
+
+### 許可されている変更
+- 文言の差し替え（\`src/content/site-content.ts\` 経由）
+- 色・フォント・余白トークンの調整（\`src/theme/theme.tokens.ts\` 経由）
+- 画像の差し替え（プレースホルダー → 実画像）
+- ボタンスタイルの微調整（角丸・ウェイト）
+
+### 禁止されている変更
+- 要素の順序変更
+- カラム数の変更
+- 背景構造の削除や大幅変更
+- 情報密度の大幅変更（セクション内の要素を大量に追加・削除）
+- セクション種別の変更（hero → feature への変換など）
+- スクリーンショットとの差分が大きい再設計
+
+### その他ルール
+1. 元サイトのリンクは復元しない。
+2. 著作権に触れうる文言や画像は差し替える。
+3. 新規下層ページを作る場合は既存 theme を継承する。
+4. \`npm run validate\` でレイアウト違反がないか検証できる。
 
 ## Section Map
 
@@ -310,7 +325,7 @@ export async function streamTsxZipExport(
   input: TsxZipExportInput,
   res: express.Response
 ) {
-  const { sections, cssTexts, screenshotBuffers } = input
+  const { sections, cssTexts, screenshotBuffers, htmlTexts } = input
 
   if (sections.length === 0) {
     res.status(404).json({ error: 'No sections to export' })
@@ -365,7 +380,9 @@ export async function streamTsxZipExport(
       domain: section.references.sourceDomain || 'unknown',
       sourceUrl: section.references.sourceUrl,
       screenshotFile,
-      html: '',  // TSX export doesn't embed raw HTML in specs
+      textSummary: section.slots?.headline || section.slots?.sectionTitle || '',
+      html: htmlTexts.get(section.rawSectionId) || '',
+      css: cssTexts[i] || '',
     })
   })
   const sectionsMarkdown = buildSectionSpecsMarkdown(exportSpecs)
