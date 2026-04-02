@@ -4,8 +4,11 @@
  * Extracts slots (headline, CTA, cards, etc.) and tokens (layout, spacing, tone)
  *
  * Phase 1: hero, feature, cta, faq, contact, footer の6種
+ * Phase 2: StyleFingerprint + CanonicalSection 昇格サポート
  */
 import type { DetectedSection } from './section-detector.js'
+import type { StyleFingerprint, CanonicalSection, CanonicalConstraints, CanonicalContentSlot } from './canonical-types.js'
+import { DEFAULT_STYLE_FINGERPRINT, DEFAULT_CONSTRAINTS, promoteToCanonicalSection } from './canonical-types.js'
 
 export interface CanonicalSlots {
   [key: string]: any
@@ -258,3 +261,158 @@ export function canonicalizeSection(
     qualityScore
   }
 }
+
+// ============================================================
+// StyleFingerprint extraction (CSS テキストから判定)
+// ============================================================
+
+export function extractStyleFingerprint(css: string, html?: string): StyleFingerprint {
+  if (!css || css.length < 20) return { ...DEFAULT_STYLE_FINGERPRINT }
+
+  // Color density: count unique colors
+  const colorMatches = css.match(/#[0-9a-fA-F]{3,8}|rgb\([^)]+\)|hsl\([^)]+\)/g) || []
+  const uniqueColors = new Set(colorMatches).size
+  const colorDensity: StyleFingerprint['colorDensity'] =
+    uniqueColors >= 12 ? 'high' : uniqueColors >= 5 ? 'mid' : 'low'
+
+  // Typography tone
+  const hasSerif = /serif/i.test(css) && !/sans-serif/i.test(css)
+  const hasPlayful = /comic|marker|handwrit|cursive|fantasy/i.test(css)
+  const hasEditorial = hasSerif || /letter-spacing|text-transform.*uppercase/i.test(css)
+  const typographyTone: StyleFingerprint['typographyTone'] =
+    hasPlayful ? 'playful'
+    : hasEditorial ? 'editorial'
+    : /font-weight:\s*(700|800|900|bold)/i.test(css) ? 'corporate'
+    : 'minimal'
+
+  // Corner style
+  const radiusMatches = css.match(/border-radius:\s*([0-9.]+)(px|rem|em|%)/gi) || []
+  let avgRadius = 0
+  if (radiusMatches.length > 0) {
+    const values = radiusMatches.map(m => {
+      const n = parseFloat(m.replace(/border-radius:\s*/i, ''))
+      return isNaN(n) ? 0 : n
+    })
+    avgRadius = values.reduce((a, b) => a + b, 0) / values.length
+  }
+  const cornerStyle: StyleFingerprint['cornerStyle'] =
+    avgRadius >= 20 ? 'pill' : avgRadius >= 4 ? 'soft' : 'sharp'
+
+  // Shadow level
+  const shadowCount = (css.match(/box-shadow/gi) || []).length
+  const shadowLevel: StyleFingerprint['shadowLevel'] =
+    shadowCount >= 6 ? 3 : shadowCount >= 3 ? 2 : shadowCount >= 1 ? 1 : 0
+
+  // Background type
+  const hasGradient = /linear-gradient|radial-gradient/i.test(css)
+  const hasBgImage = /background-image:\s*url/i.test(css)
+  const hasBgColor = /background(-color)?:\s*#[0-9a-f]/i.test(css)
+  const backgroundType: StyleFingerprint['backgroundType'] =
+    hasGradient ? 'gradient'
+    : hasBgImage ? 'image'
+    : hasBgColor ? 'tint'
+    : 'plain'
+
+  return { colorDensity, typographyTone, cornerStyle, shadowLevel, backgroundType }
+}
+
+// ============================================================
+// Layout type detection (family/variant → canonical layoutType)
+// ============================================================
+
+/** family default template mapping (fallback 用) */
+const FAMILY_DEFAULT_LAYOUT: Record<string, string> = {
+  hero: 'hero/centered-copy',
+  feature: 'feature/grid-3',
+  cta: 'cta/centered',
+  faq: 'faq/accordion',
+  contact: 'contact/form-full',
+  footer: 'footer/multi-column',
+  navigation: 'navigation/simple',
+  pricing: 'pricing/three-cards',
+  social_proof: 'social-proof/testimonial-cards',
+  stats: 'stats/row',
+  content: 'content/default',
+  recruit: 'recruit/default',
+  news_list: 'news-list/default',
+  timeline: 'timeline/default',
+  company_profile: 'company-profile/default',
+  gallery: 'gallery/default',
+  logo_cloud: 'logo-cloud/default',
+}
+
+/** variant → layoutType マッピング */
+const VARIANT_TO_LAYOUT: Record<string, string> = {
+  hero_centered: 'hero/centered-copy',
+  hero_split_left: 'hero/split-media',
+  hero_with_trust: 'hero/with-trust-bar',
+  feature_grid_3: 'feature/grid-3',
+  feature_grid_4: 'feature/grid-4',
+  feature_grid_6: 'feature/grid-6',
+  feature_alternating: 'feature/alternating',
+  cta_banner_single: 'cta/centered',
+  cta_banner_dual: 'cta/dual-button',
+  faq_accordion: 'faq/accordion',
+  faq_2col: 'faq/two-column',
+  contact_form_full: 'contact/form-full',
+  contact_split: 'contact/split',
+  footer_sitemap: 'footer/multi-column',
+  footer_minimal: 'footer/minimal',
+  nav_simple: 'navigation/simple',
+  nav_mega: 'navigation/mega',
+  pricing_3col: 'pricing/three-cards',
+  pricing_toggle: 'pricing/toggle',
+  logo_strip: 'social-proof/logo-strip',
+  testimonial_cards: 'social-proof/testimonial-cards',
+  stats_row: 'stats/row',
+  stats_with_text: 'stats/with-text',
+}
+
+function resolveLayoutType(family: string, variant: string): string {
+  return VARIANT_TO_LAYOUT[variant] || FAMILY_DEFAULT_LAYOUT[family] || `${family}/default`
+}
+
+// ============================================================
+// Full canonicalization: CanonicalBlock → CanonicalSection
+// ============================================================
+
+/**
+ * 完全な正規化を一発で行う。
+ * CanonicalBlock を内部で生成し、CanonicalSection に昇格して返す。
+ */
+export function canonicalizeSectionFull(
+  section: DetectedSection,
+  classifiedFamily: string,
+  extras: {
+    sectionId: string
+    css?: string
+    screenshotPath?: string
+    sourceUrl?: string
+    sourceDomain?: string
+    constraintOverrides?: Partial<CanonicalConstraints>
+  }
+): CanonicalSection | null {
+  const block = canonicalizeSection(section, classifiedFamily)
+  if (!block) return null
+
+  const layoutType = resolveLayoutType(block.family, block.variant)
+  const fingerprint = extras.css ? extractStyleFingerprint(extras.css) : undefined
+
+  const canonical = promoteToCanonicalSection(block, {
+    id: `cs-${extras.sectionId}`,
+    rawSectionId: extras.sectionId,
+    screenshotPath: extras.screenshotPath,
+    sourceUrl: extras.sourceUrl,
+    sourceDomain: extras.sourceDomain,
+    styleFingerprint: fingerprint,
+    constraints: extras.constraintOverrides,
+  })
+
+  // Override layoutType with resolved one
+  canonical.layoutType = layoutType
+
+  return canonical
+}
+
+// Re-export for external use
+export { FAMILY_DEFAULT_LAYOUT, VARIANT_TO_LAYOUT, resolveLayoutType }

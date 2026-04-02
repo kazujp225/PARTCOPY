@@ -80,6 +80,7 @@ export interface CanvasBlock {
   id: string
   sectionId: string
   position: number
+  layoutLocked?: boolean
 }
 
 // ============================================================

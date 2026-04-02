@@ -6,7 +6,6 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import express from 'express'
 import cors from 'cors'
-import archiver from 'archiver'
 import {
   addPatches,
   createCrawlRun,
@@ -43,10 +42,7 @@ import { STORAGE_BUCKETS } from './storage-config.js'
 import { logger } from './logger.js'
 import { convertHtmlToTsx } from './claude-converter.js'
 import {
-  buildClaudeInstructions,
   buildComponentName,
-  buildSectionSpec,
-  buildSectionSpecsMarkdown
 } from './export-instructions.js'
 import {
   collectCssAssetUrls,
@@ -63,6 +59,14 @@ import {
   filterCssForSection
 } from './render-utils.js'
 import { extractColorsFromCss, extractFontsFromCss, generateDesignTokensCss, generateBrandGuide, generateBrandOverrideCss, analyzeCssSophistication } from './design-tokens.js'
+import {
+  streamScreenshotZipExport as streamScreenshotZipExportService,
+  type ExportSectionArtifact,
+  type GetArtifactFn,
+} from './export-screenshot-zip.js'
+import { streamTsxZipExport, type TsxZipExportInput } from './export-tsx-zip.js'
+import { canonicalizeSectionFull, extractStyleFingerprint } from './canonicalizer.js'
+import type { CanonicalSection } from './canonical-types.js'
 
 /**
  * Sanitize error messages before sending to clients.
@@ -637,19 +641,7 @@ async function readBucketText(bucket: string, storagePath?: string | null) {
   return file.text()
 }
 
-interface ExportSectionArtifact {
-  sectionId: string
-  blockFamily: string
-  componentName: string
-  domain: string
-  sourceUrl?: string
-  sourceTitle?: string
-  textSummary?: string
-  screenshotFile: string
-  screenshotBuffer?: Buffer
-  html: string
-  css: string
-}
+// ExportSectionArtifact is now imported from ./export-screenshot-zip.js
 
 async function getExportSectionArtifact(
   sectionId: string,
@@ -721,6 +713,10 @@ async function getExportSectionArtifact(
   }
 }
 
+/**
+ * Screenshot ZIP export - delegates to export-screenshot-zip.ts service.
+ * getExportSectionArtifact is passed as a callback to keep DB access in index.ts.
+ */
 async function streamScreenshotZipExport(
   args: {
     sectionIds: string[]
@@ -730,231 +726,7 @@ async function streamScreenshotZipExport(
   },
   res: express.Response
 ) {
-  const usedComponentNames = new Set<string>()
-  const artifacts: ExportSectionArtifact[] = []
-
-  for (let i = 0; i < args.sectionIds.length; i++) {
-    const artifact = await getExportSectionArtifact(args.sectionIds[i], i + 1, usedComponentNames)
-    if (artifact) artifacts.push(artifact)
-  }
-
-  if (artifacts.length === 0) {
-    res.status(404).json({ error: 'No exportable sections found' })
-    return
-  }
-
-  const specs = artifacts.map((artifact, i) => buildSectionSpec({
-    index: i + 1,
-    sectionId: artifact.sectionId,
-    blockFamily: artifact.blockFamily,
-    componentName: artifact.componentName,
-    domain: artifact.domain,
-    sourceUrl: artifact.sourceUrl,
-    sourceTitle: artifact.sourceTitle,
-    screenshotFile: artifact.screenshotFile,
-    textSummary: artifact.textSummary,
-    html: artifact.html,
-    css: artifact.css
-  }))
-
-  const projectName = (args.projectName || args.companyName || 'PARTCOPY Export Project').trim() || 'PARTCOPY Export Project'
-  const claudeMd = buildClaudeInstructions({
-    projectName,
-    companyName: args.companyName,
-    serviceDescription: args.serviceDescription,
-    specs
-  })
-  const sectionsMarkdown = buildSectionSpecsMarkdown(specs)
-  const sectionsJson = JSON.stringify({
-    projectName,
-    exportedAt: new Date().toISOString(),
-    sections: specs
-  }, null, 2)
-
-  const pkgJson = JSON.stringify({
-    name: 'partcopy-rebuild-kit',
-    private: true,
-    version: '1.0.0',
-    type: 'module',
-    scripts: {
-      dev: 'vite',
-      build: 'tsc -b && vite build'
-    },
-    dependencies: {
-      react: '^19.2.4',
-      'react-dom': '^19.2.4'
-    },
-    devDependencies: {
-      '@types/react': '^19.2.14',
-      '@types/react-dom': '^19.2.3',
-      '@vitejs/plugin-react': '^6.0.1',
-      '@tailwindcss/vite': '^4.1.0',
-      tailwindcss: '^4.1.0',
-      typescript: '^6.0.2',
-      vite: '^8.0.3'
-    }
-  }, null, 2)
-
-  const indexHtml = `<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${projectName}</title>
-</head>
-<body>
-  <div id="root"></div>
-  <script type="module" src="/src/index.tsx"></script>
-</body>
-</html>
-`
-
-  const indexCss = `@import 'tailwindcss';
-
-:root {
-  color-scheme: light;
-}
-
-html {
-  scroll-behavior: smooth;
-}
-
-body {
-  margin: 0;
-  min-width: 320px;
-  background: #f8fafc;
-  color: #0f172a;
-  font-family: "Noto Sans JP", "Hiragino Sans", sans-serif;
-}
-`
-
-  const indexTsx = `import ReactDOM from 'react-dom/client'
-import './index.css'
-import App from './App'
-
-ReactDOM.createRoot(document.getElementById('root')!).render(<App />)
-`
-
-  const imports = artifacts.map((artifact) => `import ${artifact.componentName} from './components/${artifact.componentName}'`).join('\n')
-  const renders = artifacts.map((artifact) => `      <${artifact.componentName} />`).join('\n')
-  const appTsx = `${imports}
-
-export default function App() {
-  return (
-    <main className="min-h-screen">
-${renders}
-    </main>
-  )
-}
-`
-
-  const readmeMd = `# PARTCOPY Rebuild Kit
-
-このZIPには元HTML/CSSではなく、スクリーンショットと再現指示書が入っています。
-
-## 使い方
-
-1. \`screenshots/\` で見た目を確認
-2. \`specs/sections.md\` で構成情報を確認
-3. \`CLAUDE.md\` を Claude Code に渡して \`src/components/\` を順番に実装
-
-## 開発
-
-\`\`\`bash
-npm install
-npm run dev
-\`\`\`
-`
-
-  const viteConfig = `import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
-
-export default defineConfig({
-  plugins: [react(), tailwindcss()],
-})
-`
-
-  const tsconfigJson = JSON.stringify({
-    compilerOptions: {
-      target: 'ES2020',
-      useDefineForClassFields: true,
-      lib: ['ES2020', 'DOM', 'DOM.Iterable'],
-      module: 'ESNext',
-      skipLibCheck: true,
-      moduleResolution: 'bundler',
-      allowImportingTsExtensions: true,
-      isolatedModules: true,
-      moduleDetection: 'force',
-      noEmit: true,
-      jsx: 'react-jsx',
-      strict: true,
-      noUnusedLocals: false,
-      noUnusedParameters: false
-    },
-    include: ['src']
-  }, null, 2)
-
-  const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480"><rect width="800" height="480" fill="#e2e8f0"/><text x="400" y="240" text-anchor="middle" fill="#64748b" font-family="sans-serif" font-size="22">Replace with your own asset</text></svg>`
-  const screenshotPlaceholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900"><rect width="1440" height="900" fill="#f8fafc"/><rect x="48" y="48" width="1344" height="804" rx="32" fill="#e2e8f0" stroke="#cbd5e1" stroke-width="4" stroke-dasharray="12 12"/><text x="720" y="438" text-anchor="middle" fill="#475569" font-family="sans-serif" font-size="32">Screenshot unavailable</text><text x="720" y="490" text-anchor="middle" fill="#64748b" font-family="sans-serif" font-size="20">Use specs/sections.md and the section summary to rebuild this part.</text></svg>`
-
-  res.setHeader('Content-Type', 'application/zip')
-  res.setHeader('Content-Disposition', 'attachment; filename="partcopy-export.zip"')
-
-  const archive = archiver('zip', { zlib: { level: 9 } })
-  archive.on('error', (archiveErr: Error) => {
-    logger.error('Archiver error mid-stream', { error: archiveErr.message })
-    if (!res.headersSent) {
-      res.status(500).json({ error: archiveErr.message })
-    } else {
-      res.end()
-    }
-  })
-
-  archive.pipe(res)
-  archive.append(claudeMd, { name: 'CLAUDE.md' })
-  archive.append(readmeMd, { name: 'README.md' })
-  archive.append(sectionsMarkdown, { name: 'specs/sections.md' })
-  archive.append(sectionsJson, { name: 'specs/sections.json' })
-  archive.append(indexHtml, { name: 'index.html' })
-  archive.append(pkgJson, { name: 'package.json' })
-  archive.append(tsconfigJson, { name: 'tsconfig.json' })
-  archive.append(viteConfig, { name: 'vite.config.ts' })
-  archive.append(indexCss, { name: 'src/index.css' })
-  archive.append(indexTsx, { name: 'src/index.tsx' })
-  archive.append(appTsx, { name: 'src/App.tsx' })
-  archive.append(placeholderSvg, { name: 'public/assets/placeholder.svg' })
-
-  for (const artifact of artifacts) {
-    const spec = specs.find((entry) => entry.id === artifact.sectionId)
-    const componentStub = `export default function ${artifact.componentName}() {
-  return (
-    <section className="px-6 py-20">
-      <div className="mx-auto max-w-6xl rounded-3xl border border-dashed border-slate-300 bg-white p-10 shadow-sm">
-        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
-          ${spec?.blockFamilyLabel || artifact.blockFamily}
-        </p>
-        <h2 className="mt-4 text-3xl font-semibold tracking-tight text-slate-900">
-          ${artifact.componentName}
-        </h2>
-        <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
-          screenshots/${artifact.screenshotFile} と specs/sections.md を参考に Tailwind で再構築してください。
-        </p>
-      </div>
-    </section>
-  )
-}
-`
-    archive.append(componentStub, { name: `src/components/${artifact.componentName}.tsx` })
-
-    if (artifact.screenshotBuffer) {
-      archive.append(artifact.screenshotBuffer, { name: `screenshots/${artifact.screenshotFile}` })
-    } else {
-      archive.append(screenshotPlaceholderSvg, { name: `screenshots/${artifact.screenshotFile}` })
-    }
-  }
-
-  await archive.finalize()
+  await streamScreenshotZipExportService(args, res, getExportSectionArtifact)
 }
 
 async function createExtractJobRecord(url: string, genre: string, tags: string[], maxPages: number = 5) {
@@ -2775,6 +2547,195 @@ app.post('/api/export/screenshot-zip', async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: safeErrorMessage(err) })
     }
+  }
+})
+
+// ============================================================
+// TSX ZIP Export (canonical + theme based)
+// ============================================================
+app.post('/api/export/tsx-zip', async (req, res) => {
+  const { sectionIds, projectName, companyName, serviceDescription } = req.body as {
+    sectionIds: string[]
+    projectName?: string
+    companyName?: string
+    serviceDescription?: string
+  }
+
+  if (!sectionIds || !Array.isArray(sectionIds) || sectionIds.length === 0) {
+    res.status(400).json({ error: 'sectionIds array required' })
+    return
+  }
+
+  try {
+    const canonicalSections: CanonicalSection[] = []
+    const cssTexts: string[] = []
+    const screenshotBuffers = new Map<string, Buffer>()
+
+    for (const sectionId of sectionIds) {
+      const prepared = await prepareSectionRender(sectionId)
+      if (!prepared) continue
+
+      let blockFamily = prepared.blockFamily || 'section'
+      let thumbnailPath = ''
+      let sourceUrl = ''
+      let sourceDomain = 'unknown'
+      let textSummary = ''
+
+      if (HAS_SUPABASE) {
+        const { data: section } = await supabaseAdmin
+          .from('source_sections')
+          .select('id, block_family, block_variant, thumbnail_storage_path, text_summary, features_jsonb, source_pages(url, title), source_sites(normalized_domain)')
+          .eq('id', sectionId)
+          .single()
+        blockFamily = section?.block_family || blockFamily
+        thumbnailPath = section?.thumbnail_storage_path || ''
+        sourceUrl = section?.source_pages?.url || ''
+        sourceDomain = section?.source_sites?.normalized_domain || ''
+        textSummary = section?.text_summary || ''
+      } else {
+        const section = await getSection(sectionId)
+        const page = section ? await getPageById(section.page_id) : null
+        blockFamily = section?.block_family || blockFamily
+        thumbnailPath = section?.thumbnail_storage_path || ''
+        sourceUrl = page?.url || ''
+        textSummary = section?.text_summary || ''
+        if (sourceUrl) {
+          try { sourceDomain = new URL(sourceUrl).hostname.replace(/^www\./, '') } catch {}
+        }
+      }
+
+      // Build a minimal DetectedSection for canonicalization
+      const minimalSection = {
+        tagName: 'section',
+        html: prepared.html,
+        textContent: textSummary || '',
+        classTokens: [] as string[],
+        computedStyles: { textAlign: 'left', backgroundColor: 'transparent', fontSize: '16px', padding: '0' },
+        features: {
+          headingTexts: [] as string[],
+          imageCount: 0,
+          buttonCount: 0,
+          linkCount: 0,
+          formCount: 0,
+          listItemCount: 0,
+          cardCount: 0,
+          childCount: 0,
+          textLength: textSummary?.length || 0,
+          hasSvg: false,
+          repeatedChildPattern: false,
+        },
+      } as any
+
+      const canonical = canonicalizeSectionFull(minimalSection, blockFamily, {
+        sectionId,
+        css: prepared.css,
+        screenshotPath: thumbnailPath,
+        sourceUrl,
+        sourceDomain,
+      })
+
+      if (canonical) {
+        canonicalSections.push(canonical)
+        cssTexts.push(prepared.css)
+
+        // Load screenshot
+        if (thumbnailPath) {
+          const file = await readBucketFile(STORAGE_BUCKETS.SECTION_THUMBNAILS, thumbnailPath)
+            || await readBucketFile(STORAGE_BUCKETS.RAW_HTML, thumbnailPath)
+          if (file) {
+            screenshotBuffers.set(sectionId, file.buffer)
+          }
+        }
+      }
+    }
+
+    await streamTsxZipExport({
+      sections: canonicalSections,
+      cssTexts,
+      screenshotBuffers,
+      projectName,
+      companyName,
+      serviceDescription,
+    }, res)
+  } catch (err: any) {
+    logger.error('TSX ZIP export failed', { error: err.message })
+    if (!res.headersSent) {
+      res.status(500).json({ error: safeErrorMessage(err) })
+    }
+  }
+})
+
+// ============================================================
+// Canonicalize section (API)
+// ============================================================
+app.post('/api/sections/:sectionId/canonicalize', async (req, res) => {
+  const { sectionId } = req.params
+  try {
+    const prepared = await prepareSectionRender(sectionId)
+    if (!prepared) {
+      res.status(404).json({ error: 'Section not found' })
+      return
+    }
+
+    let blockFamily = prepared.blockFamily || 'section'
+    let sourceUrl = ''
+    let sourceDomain = 'unknown'
+
+    if (HAS_SUPABASE) {
+      const { data } = await supabaseAdmin
+        .from('source_sections')
+        .select('block_family, source_pages(url), source_sites(normalized_domain)')
+        .eq('id', sectionId)
+        .single()
+      blockFamily = data?.block_family || blockFamily
+      sourceUrl = data?.source_pages?.url || ''
+      sourceDomain = data?.source_sites?.normalized_domain || ''
+    } else {
+      const section = await getSection(sectionId)
+      const page = section ? await getPageById(section.page_id) : null
+      blockFamily = section?.block_family || blockFamily
+      sourceUrl = page?.url || ''
+      if (sourceUrl) {
+        try { sourceDomain = new URL(sourceUrl).hostname.replace(/^www\./, '') } catch {}
+      }
+    }
+
+    const minimalSection = {
+      tagName: 'section',
+      html: prepared.html,
+      textContent: '',
+      classTokens: [],
+      computedStyles: { textAlign: 'left', backgroundColor: 'transparent', fontSize: '16px', padding: '0' },
+      features: {
+        headingTexts: [],
+        imageCount: 0,
+        buttonCount: 0,
+        linkCount: 0,
+        formCount: 0,
+        listItemCount: 0,
+        cardCount: 0,
+        childCount: 0,
+        textLength: 0,
+        hasSvg: false,
+        repeatedChildPattern: false,
+      },
+    } as any
+
+    const canonical = canonicalizeSectionFull(minimalSection, blockFamily, {
+      sectionId,
+      css: prepared.css,
+      sourceUrl,
+      sourceDomain,
+    })
+
+    if (!canonical) {
+      res.status(500).json({ error: 'Canonicalization failed' })
+      return
+    }
+
+    res.json({ canonicalSection: canonical })
+  } catch (err: any) {
+    res.status(500).json({ error: safeErrorMessage(err) })
   }
 })
 

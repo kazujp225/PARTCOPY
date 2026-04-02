@@ -17,7 +17,7 @@ interface Props {
   onMove: (from: number, to: number) => void
   onViewTsx?: (sectionId: string) => void
   onDesignEdit?: (sectionId: string, familyName?: string) => void
-  onExportZip?: () => void
+  onExportZip?: (mode?: 'tsx' | 'screenshot') => void
   exporting?: boolean
   exportProgress?: { message: string; current?: number; total?: number; sectionName?: string; estimate?: string } | null
   onSaveProject?: () => void
@@ -96,8 +96,11 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onDesignEdit, onExp
             )}
             {onExportZip && items.length > 0 && (
               <div className="zip-export-group">
-                <button className="zip-btn primary" onClick={onExportZip} disabled={exporting}>
-                  {exporting ? '出力中...' : '\u2193 再現用ZIPを出力'}
+                <button className="zip-btn primary" onClick={() => onExportZip('tsx')} disabled={exporting}>
+                  {exporting ? '出力中...' : '↓ TSX ZIP Export'}
+                </button>
+                <button className="zip-btn" onClick={() => onExportZip('screenshot')} disabled={exporting} style={{ marginLeft: 4, fontSize: '0.8em', opacity: 0.7 }}>
+                  スクショ版
                 </button>
                 {exporting && exportProgress && (
                   <div className="export-progress">

@@ -535,7 +535,7 @@ export default function App() {
     }
   }, [])
 
-  const handleExportZip = useCallback(async () => {
+  const handleExportZip = useCallback(async (mode: 'screenshot' | 'tsx' = 'tsx') => {
     if (canvas.length === 0) return
     setExporting(true)
     try {
@@ -566,11 +566,14 @@ export default function App() {
         ? projectList.find((project) => project.id === activeProjectId)?.name
         : undefined
 
+      const endpoint = mode === 'tsx' ? '/api/export/tsx-zip' : '/api/export/zip'
+      const label = mode === 'tsx' ? 'TSXテンプレートを生成中...' : 'スクリーンショットと指示書を収集中...'
+
       setExportProgress({
-        message: 'スクリーンショットと指示書を収集中...',
+        message: label,
         estimate: '数十秒ほどお待ちください'
       })
-      const res = await fetch('/api/export/zip', {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sectionIds, projectName }),
@@ -582,7 +585,7 @@ export default function App() {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = 'partcopy-export.zip'
+      a.download = mode === 'tsx' ? 'partcopy-tsx-export.zip' : 'partcopy-export.zip'
       a.click()
       URL.revokeObjectURL(url)
     } catch (err: any) {
@@ -943,13 +946,13 @@ export default function App() {
       {view === 'editor' && (
         <div className="editor-layout">
           <PartsPanel sections={filteredSections} onAdd={addToCanvas} onRemove={removeSection} onViewTsx={handleViewTsx} />
-          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onDesignEdit={(sectionId, familyName) => setDesignEditTarget({ sectionId, familyName })} onExportZip={handleExportZip} exporting={exporting} exportProgress={exportProgress} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} designEditedSections={designEditedSections} />
+          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onDesignEdit={(sectionId, familyName) => setDesignEditTarget({ sectionId, familyName })} onExportZip={(mode) => handleExportZip(mode || 'tsx')} exporting={exporting} exportProgress={exportProgress} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} designEditedSections={designEditedSections} />
         </div>
       )}
 
       {view === 'preview' && (
         <>
-          <Preview items={canvasItems} onExportZip={handleExportZip} exporting={exporting} exportProgress={exportProgress} />
+          <Preview items={canvasItems} onExportZip={(mode) => handleExportZip(mode || 'tsx')} exporting={exporting} exportProgress={exportProgress} />
           {canvasItems.length > 0 && (
             <div className="preview-project-bar">
               <button className="preview-save-btn" onClick={handleSaveProject}>
