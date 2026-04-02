@@ -371,7 +371,10 @@ export async function streamTsxZipExport(
 
   // Build section specs for markdown (reuse existing)
   const exportSpecs = unifiedSections.map((section, i) => {
-    const screenshotFile = `${String(i + 1).padStart(2, '0')}-${section.family.replace(/[^a-z0-9_-]+/gi, '-')}.png`
+    const familySlug = section.family.replace(/[^a-z0-9_-]+/gi, '-')
+    const prefix = String(i + 1).padStart(2, '0')
+    const hasScreenshot = screenshotBuffers.has(section.rawSectionId)
+    const screenshotFile = `${prefix}-${familySlug}.${hasScreenshot ? 'png' : 'svg'}`
     return buildSectionSpec({
       index: i + 1,
       sectionId: section.rawSectionId,
@@ -493,13 +496,14 @@ ReactDOM.createRoot(document.getElementById('root')!).render(<App />)
     const tsxContent = generateSectionTsx(componentNames[i], unifiedSections[i], theme)
     archive.append(tsxContent, { name: `src/components/sections/${componentNames[i]}.tsx` })
 
-    // Screenshots
-    const screenshotFile = `${String(i + 1).padStart(2, '0')}-${unifiedSections[i].family.replace(/[^a-z0-9_-]+/gi, '-')}.png`
+    // Screenshots: PNG if available, SVG placeholder otherwise
+    const familySlug = unifiedSections[i].family.replace(/[^a-z0-9_-]+/gi, '-')
+    const prefix = String(i + 1).padStart(2, '0')
     const buffer = screenshotBuffers.get(unifiedSections[i].rawSectionId)
     if (buffer) {
-      archive.append(buffer, { name: `screenshots/${screenshotFile}` })
+      archive.append(buffer, { name: `screenshots/${prefix}-${familySlug}.png` })
     } else {
-      archive.append(SCREENSHOT_PLACEHOLDER_SVG, { name: `screenshots/${screenshotFile}` })
+      archive.append(SCREENSHOT_PLACEHOLDER_SVG, { name: `screenshots/${prefix}-${familySlug}.svg` })
     }
   }
 

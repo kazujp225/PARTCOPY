@@ -367,8 +367,9 @@ export function extractFeaturesFromHtml(html: string, textSummary?: string): {
   const root = $.root().children().first()
   const childCount = root.children().length
 
-  // Text content
-  const textContent = textSummary || $.text().replace(/\s+/g, ' ').trim().slice(0, 1000)
+  // Text content: HTML本文を主、textSummary は fallback
+  const htmlText = $.text().replace(/\s+/g, ' ').trim()
+  const textContent = htmlText.length > 20 ? htmlText.slice(0, 2000) : (textSummary || htmlText).slice(0, 2000)
 
   // Class tokens (from root and direct children)
   const classTokens: string[] = []
