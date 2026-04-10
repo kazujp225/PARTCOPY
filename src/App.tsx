@@ -17,6 +17,7 @@ type View = 'dashboard' | 'editor' | 'preview' | 'library' | 'project-detail'
 const CANVAS_STORAGE_KEY = 'partcopy:canvas'
 const ACTIVE_PROJECT_KEY = 'partcopy:activeProjectId'
 const ACTIVE_VIEW_KEY = 'partcopy:view'
+const EDITOR_MODE_KEY = 'partcopy:editorMode'
 const CANVAS_STORAGE_VERSION = 1
 function loadCanvasFromStorage(): CanvasBlock[] {
   try {
@@ -35,6 +36,13 @@ function loadActiveView(): View {
   if (v && ['dashboard','editor','preview','library','project-detail'].includes(v)) return v as View
   return 'dashboard'
 }
+type EditorMode = 'source' | 'rawconcat' | 'preserve' | 'styled'
+function loadEditorMode(): EditorMode {
+  const raw = localStorage.getItem(EDITOR_MODE_KEY)
+  if (raw === 'rawconcat' || raw === 'preserve' || raw === 'styled') return raw
+  if (raw === 'compose') return 'rawconcat' // migrate old value to the strict preserve path
+  return 'source'
+}
 
 export default function App() {
   const [sections, setSections] = useState<SourceSection[]>([])
@@ -52,6 +60,8 @@ export default function App() {
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
   const [projectList, setProjectList] = useState<Array<{id: string; name: string; canvas_json: any[]; created_at: string}>>([])
   const [activeProjectId, setActiveProjectIdState] = useState<string | null>(loadActiveProjectId)
+  const [editorMode, setEditorModeState] = useState<EditorMode>(loadEditorMode)
+  const lastComposeAutoKeyRef = useRef<string | null>(null)
 
   // Auto-crawl state
   const [crawlQueueCount, setCrawlQueueCount] = useState(0)
@@ -88,6 +98,10 @@ export default function App() {
   const setView = useCallback((v: View) => {
     setViewState(v)
     localStorage.setItem(ACTIVE_VIEW_KEY, v)
+  }, [])
+  const setEditorMode = useCallback((mode: EditorMode) => {
+    setEditorModeState(mode)
+    localStorage.setItem(EDITOR_MODE_KEY, mode)
   }, [])
 
   // 初回ロード時にSupabaseからcanvas復元するまで自動保存を抑止
@@ -221,6 +235,8 @@ export default function App() {
     }
     canvasCleanedRef.current = true
   }, [sections, canvas])
+
+  // No longer auto-switch to compose — respect last-used mode from localStorage
 
   // Cycle crawl steps 1→2→3→4 every 8 seconds while active
   useEffect(() => {
@@ -535,7 +551,7 @@ export default function App() {
     }
   }, [])
 
-  const handleExportZip = useCallback(async (mode: 'screenshot' | 'tsx' = 'tsx') => {
+  const handleExportZip = useCallback(async (mode?: 'screenshot' | 'tsx' | 'compose') => {
     if (canvas.length === 0) return
     setExporting(true)
     try {
@@ -566,17 +582,28 @@ export default function App() {
         ? projectList.find((project) => project.id === activeProjectId)?.name
         : undefined
 
-      const endpoint = mode === 'tsx' ? '/api/export/tsx-zip' : '/api/export/zip'
-      const label = mode === 'tsx' ? 'TSXテンプレートを生成中...' : 'スクリーンショットと指示書を収集中...'
+      const isCompose = editorMode === 'rawconcat' || editorMode === 'preserve' || editorMode === 'styled'
+      const resolvedMode = mode === 'compose' ? 'compose' : mode || (isCompose ? 'compose' : 'tsx')
+      const endpoint = resolvedMode === 'compose'
+        ? '/api/export/compose-zip'
+        : resolvedMode === 'tsx'
+          ? '/api/export/tsx-zip'
+          : '/api/export/zip'
+      const label = resolvedMode === 'compose'
+        ? 'Composeで見えているページを書き出し中...'
+        : resolvedMode === 'tsx'
+          ? 'TSXテンプレートを生成中...'
+          : 'スクリーンショットと指示書を収集中...'
 
       setExportProgress({
         message: label,
         estimate: '数十秒ほどお待ちください'
       })
+      const composeMode = editorMode === 'rawconcat' ? 'rawconcat' : editorMode === 'preserve' ? 'preserve' : 'styled'
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sectionIds, projectName }),
+        body: JSON.stringify({ sectionIds, projectName, mode: resolvedMode === 'compose' ? composeMode : undefined }),
         signal: AbortSignal.timeout(300_000) // 5 min for ZIP generation
       })
       if (!res.ok) throw new Error('ZIP出力に失敗しました')
@@ -585,7 +612,11 @@ export default function App() {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = mode === 'tsx' ? 'partcopy-tsx-export.zip' : 'partcopy-export.zip'
+      a.download = resolvedMode === 'compose'
+        ? 'partcopy-compose-export.zip'
+        : resolvedMode === 'tsx'
+          ? 'partcopy-tsx-export.zip'
+          : 'partcopy-export.zip'
       a.click()
       URL.revokeObjectURL(url)
     } catch (err: any) {
@@ -594,7 +625,7 @@ export default function App() {
       setExporting(false)
       setExportProgress(null)
     }
-  }, [canvas, sections, activeProjectId, projectList])
+  }, [canvas, sections, activeProjectId, projectList, editorMode])
 
   const handleNewProject = async (name: string) => {
     try {
@@ -946,7 +977,22 @@ export default function App() {
       {view === 'editor' && (
         <div className="editor-layout">
           <PartsPanel sections={filteredSections} onAdd={addToCanvas} onRemove={removeSection} onViewTsx={handleViewTsx} />
-          <Canvas items={canvasItems} onRemove={removeFromCanvas} onMove={moveBlock} onViewTsx={handleViewTsx} onDesignEdit={(sectionId, familyName) => setDesignEditTarget({ sectionId, familyName })} onExportZip={(mode) => handleExportZip(mode || 'tsx')} exporting={exporting} exportProgress={exportProgress} onSaveProject={handleSaveProject} onNewProject={() => setShowNewProject(true)} designEditedSections={designEditedSections} />
+          <Canvas
+            items={canvasItems}
+            onRemove={removeFromCanvas}
+            onMove={moveBlock}
+            onViewTsx={handleViewTsx}
+            onDesignEdit={(sectionId, familyName) => setDesignEditTarget({ sectionId, familyName })}
+            onExportZip={(mode) => handleExportZip(mode || 'tsx')}
+            exporting={exporting}
+            exportProgress={exportProgress}
+            onSaveProject={handleSaveProject}
+            onNewProject={() => setShowNewProject(true)}
+            designEditedSections={designEditedSections}
+            editorMode={editorMode}
+            onEditorModeChange={setEditorMode}
+            projectName={activeProjectId ? projectList.find((project) => project.id === activeProjectId)?.name : undefined}
+          />
         </div>
       )}
 
@@ -1050,73 +1096,6 @@ export default function App() {
         </div>
       )}
 
-      {loading && (
-        <div className="loading-overlay">
-          <div className="loading-terminal">
-            <div className="terminal-header">
-              <span className="terminal-dot red" />
-              <span className="terminal-dot yellow" />
-              <span className="terminal-dot green" />
-              <span className="terminal-title">PARTCOPY — 解析中</span>
-            </div>
-            <div className="terminal-body">
-              <div className="terminal-line typing-1">
-                <span className="terminal-prompt">$</span> サイトに接続しています...
-              </div>
-              <div className="terminal-line typing-2">
-                <span className="terminal-prompt">$</span> HTML / CSS / 画像 / フォントをダウンロード中...
-              </div>
-              <div className="terminal-line typing-3">
-                <span className="terminal-prompt">$</span> セクションを検出しています...
-              </div>
-              <div className="terminal-line typing-4">
-                <span className="terminal-prompt">$</span> パーツを分類しています...
-              </div>
-              <div className="terminal-line typing-5">
-                <span className="terminal-prompt">&gt;</span> ライブラリに保存中...
-              </div>
-              {jobStatus && (
-                <div className="terminal-status">
-                  <span className="terminal-cursor" />
-                  {jobStatus}
-                </div>
-              )}
-              {jobStatus && (
-                <button className="terminal-cancel-btn" onClick={() => { stopPolling(); setLoading(false); setJobStatus(null) }}>
-                  中断する
-                </button>
-              )}
-              {!jobStatus && sections.length > 0 && (
-                <>
-                  <div className="terminal-done">
-                    <span>✓ 抽出完了 — 今回 {lastCrawlSections.length} パーツ取得（新規 {lastCrawlNewCount} 件）</span>
-                  </div>
-                  <div className="terminal-done-sub">
-                    <span>ライブラリ合計: {sections.length} パーツ</span>
-                  </div>
-                  <div className="terminal-results">
-                    {(lastCrawlSections.length > 0 ? lastCrawlSections.slice(-10) : sections.slice(-10)).map((s, i) => (
-                      <div key={s.id} className="terminal-result-line" style={{ animationDelay: `${i * 0.15}s` }}>
-                        <span className="terminal-prompt">→</span>
-                        <span className="result-family">[{s.block_family}]</span>
-                        <span className="result-domain">{s.source_sites?.normalized_domain || ''}</span>
-                        {s.tsx_code_storage_path && <span className="result-tsx">TSX</span>}
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-            {!jobStatus && sections.length > 0 && (
-              <div className="terminal-footer">
-                <button className="terminal-view-btn" onClick={() => { setLoading(false); setView('library') }}>
-                  抽出結果を見る →
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
       </main>
       </ErrorBoundary>
     </div>

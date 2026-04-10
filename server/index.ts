@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import express from 'express'
 import cors from 'cors'
+import archiver from 'archiver'
 import {
   addPatches,
   createCrawlRun,
@@ -255,20 +256,150 @@ body {
   float: none;
   clear: both;
   position: relative;
-  overflow: hidden;
-}
-
-[data-partcopy-section] > *:first-child {
-  margin-top: 0 !important;
-}
-
-[data-partcopy-section] > *:last-child {
-  margin-bottom: 0 !important;
 }
 
 .pc-preview-page > [data-partcopy-section] + [data-partcopy-section] {
   border-top: none;
   margin-top: 0;
+}
+`.trim()
+
+const PLACEHOLDER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480"><rect width="800" height="480" fill="#e2e8f0"/><text x="400" y="240" text-anchor="middle" fill="#64748b" font-family="sans-serif" font-size="22">Missing asset</text></svg>`
+
+// ============================================================
+// Raw Concat: 最小限のbody reset のみ
+// ============================================================
+const RAWCONCAT_MINIMAL_CSS = `
+html, body { margin: 0; padding: 0; }
+`.trim()
+
+// ============================================================
+// Source Reset: iframe個別表示用の最小リセット（スコープ不要）
+// ============================================================
+const SOURCE_RESET_CSS = `
+html, body { margin: 0; padding: 0; }
+body { background: #ffffff; }
+`.trim()
+
+// ============================================================
+// Compose normalization CSS — Panasonic anchor token override
+// ============================================================
+const COMPOSE_NORMALIZE_CSS = `
+/* ── Compose Normalize: Panasonic anchor tokens ── */
+/* Structure is never changed. Only visual tokens are overridden. */
+
+[data-partcopy-section] {
+  font-family: "Noto Sans JP", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    "Yu Gothic UI", "Meiryo", -apple-system, BlinkMacSystemFont, sans-serif !important;
+  color: #475569 !important;
+  font-size: 15px !important;
+  line-height: 1.8 !important;
+  -webkit-font-smoothing: antialiased !important;
+  -moz-osx-font-smoothing: grayscale !important;
+}
+
+/* Heading normalization */
+[data-partcopy-section] h1 {
+  font-size: clamp(28px, 3.5vw, 48px) !important;
+  font-weight: 700 !important;
+  line-height: 1.15 !important;
+  letter-spacing: -0.02em !important;
+  color: #0f172a !important;
+}
+[data-partcopy-section] h2 {
+  font-size: 22px !important;
+  font-weight: 700 !important;
+  line-height: 1.25 !important;
+  letter-spacing: -0.02em !important;
+  color: #0f172a !important;
+}
+[data-partcopy-section] h3 {
+  font-size: 17px !important;
+  font-weight: 700 !important;
+  line-height: 1.35 !important;
+  letter-spacing: -0.01em !important;
+  color: #0f172a !important;
+}
+[data-partcopy-section] h4,
+[data-partcopy-section] h5,
+[data-partcopy-section] h6 {
+  font-weight: 700 !important;
+  color: #0f172a !important;
+}
+
+/* Body text */
+[data-partcopy-section] p,
+[data-partcopy-section] li,
+[data-partcopy-section] dd,
+[data-partcopy-section] td,
+[data-partcopy-section] th {
+  color: #475569 !important;
+  line-height: 1.8 !important;
+}
+
+/* Links */
+[data-partcopy-section] a {
+  color: #0062a8 !important;
+}
+[data-partcopy-section] a:hover {
+  color: #004d85 !important;
+}
+
+/* Muted / caption text */
+[data-partcopy-section] small,
+[data-partcopy-section] figcaption,
+[data-partcopy-section] .caption,
+[data-partcopy-section] time {
+  color: #64748b !important;
+}
+
+/* Buttons — Panasonic style: controlled radius, dark bg */
+[data-partcopy-section] button,
+[data-partcopy-section] a[class*="btn"],
+[data-partcopy-section] a[class*="button"],
+[data-partcopy-section] [class*="btn"],
+[data-partcopy-section] [class*="button"],
+[data-partcopy-section] input[type="submit"] {
+  border-radius: 4px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.02em !important;
+}
+
+/* Borders & dividers */
+[data-partcopy-section] hr {
+  border-color: rgba(15, 23, 42, 0.10) !important;
+}
+
+/* Background tone — white base, let sections alternate naturally */
+[data-partcopy-section] {
+  background-color: #ffffff !important;
+}
+[data-partcopy-section]:nth-child(even) {
+  background-color: #f8fafc !important;
+}
+
+/* Image handling — keep natural but ensure contained */
+[data-partcopy-section] img {
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+/* Section vertical rhythm */
+.pc-compose-page > [data-partcopy-section] {
+  padding-top: 48px !important;
+  padding-bottom: 48px !important;
+}
+.pc-compose-page > [data-partcopy-section]:first-child {
+  padding-top: 0 !important;
+}
+.pc-compose-page > [data-partcopy-section]:last-child {
+  padding-bottom: 0 !important;
+}
+
+/* Container alignment */
+.pc-compose-page {
+  max-width: 1200px;
+  margin: 0 auto;
 }
 `.trim()
 
@@ -377,6 +508,192 @@ function dedupeCssBlocks(blocks: string[]) {
   return unique
 }
 
+function buildComposeDocument(
+  preparedSections: PreparedSectionRender[],
+  replacer?: (url: string) => string | undefined,
+  options?: { skipNormalize?: boolean; rawConcat?: boolean }
+) {
+  const normalizedSections = preparedSections.map((section) => ({
+    ...section,
+    html: replacer ? rewriteHtmlAssetUrls(section.html, replacer) : section.html,
+    css: replacer ? rewriteCssUrls(section.css, replacer) : section.css,
+    fontFaceCss: replacer
+      ? section.fontFaceCss.map((block) => rewriteCssUrls(block, replacer))
+      : section.fontFaceCss
+  }))
+
+  const mergedCss = normalizedSections.map((section) => section.css)
+  const mergedFontFaces = dedupeCssBlocks(normalizedSections.flatMap((section) => section.fontFaceCss))
+
+  if (options?.rawConcat) {
+    // Raw Concat: HTML/CSSを一切変更しない。最小限のbody resetのみ
+    const mergedHtml = normalizedSections
+      .map((s) => `<div class="${s.scopeClass}">${s.html}</div>`)
+      .join('\n')
+    const styleSheets = [RAWCONCAT_MINIMAL_CSS, ...mergedFontFaces, ...mergedCss]
+    const html = buildRenderDocument(mergedHtml, '', {
+      skipBase: true,
+      extraHead: buildStyleTags(styleSheets)
+    })
+    return { html, normalizedSections }
+  }
+
+  const mergedHtml = normalizedSections.map(renderPreparedSection).join('\n')
+
+  const styleSheets = [PARTCOPY_BASE_CSS, ...mergedFontFaces, ...mergedCss]
+  if (!options?.skipNormalize) {
+    styleSheets.push(COMPOSE_NORMALIZE_CSS)
+  }
+
+  const html = buildRenderDocument(`<main class="pc-compose-page">${mergedHtml}</main>`, '', {
+    skipBase: true,
+    extraHead: buildStyleTags(styleSheets)
+  })
+
+  return {
+    html,
+    normalizedSections
+  }
+}
+
+async function resolveComposeExportAssets(preparedSections: PreparedSectionRender[]) {
+  const allAssetUrls = new Set<string>()
+  for (const section of preparedSections) {
+    for (const url of collectHtmlAssetUrls(section.html)) allAssetUrls.add(url)
+    for (const url of collectCssAssetUrls(section.css + '\n' + section.fontFaceCss.join('\n'))) allAssetUrls.add(url)
+  }
+
+  for (const url of [...allAssetUrls]) {
+    if (url.startsWith('data:')) allAssetUrls.delete(url)
+  }
+
+  const assetMap = new Map<string, string>()
+  const assetBuffers = new Map<string, Buffer>()
+  let resolvedCount = 0
+  let unresolvedCount = 0
+  const BATCH_SIZE = 10
+  const assetEntries = [...allAssetUrls]
+
+  for (let batch = 0; batch < assetEntries.length; batch += BATCH_SIZE) {
+    const slice = assetEntries.slice(batch, batch + BATCH_SIZE)
+    const results = await Promise.all(slice.map(async (url) => {
+      try {
+        const loaded = await loadExportAssetSource(url)
+        if (loaded) {
+          const fileName = buildExportAssetFileName(loaded.key, url, loaded.contentType, loaded.fileNameHint)
+          return { url, fileName, buffer: loaded.buffer }
+        }
+      } catch {}
+      return { url, fileName: null, buffer: null }
+    }))
+
+    for (const result of results) {
+      if (result.fileName && result.buffer) {
+        assetMap.set(result.url, result.fileName)
+        assetBuffers.set(result.fileName, result.buffer)
+        resolvedCount += 1
+      } else {
+        unresolvedCount += 1
+      }
+    }
+  }
+
+  return {
+    allAssetUrls,
+    assetMap,
+    assetBuffers,
+    resolvedCount,
+    unresolvedCount
+  }
+}
+
+async function streamComposeZipExport(
+  sectionIds: string[],
+  projectName: string | undefined,
+  res: express.Response,
+  options?: { skipNormalize?: boolean; rawConcat?: boolean }
+) {
+  const preparedSections = (
+    await Promise.all(sectionIds.map((sectionId) => prepareSectionRender(sectionId)))
+  ).filter((section): section is PreparedSectionRender => Boolean(section))
+
+  if (preparedSections.length === 0) {
+    res.status(404).json({ error: 'No sections found' })
+    return
+  }
+
+  const {
+    allAssetUrls,
+    assetMap,
+    assetBuffers,
+    resolvedCount,
+    unresolvedCount
+  } = await resolveComposeExportAssets(preparedSections)
+
+  const replacer = (url: string) => {
+    const local = assetMap.get(url)
+    return local ? `./assets/${local}` : './assets/placeholder.svg'
+  }
+
+  const { html } = buildComposeDocument(preparedSections, replacer, {
+    skipNormalize: options?.skipNormalize,
+    rawConcat: options?.rawConcat
+  })
+  const safeProjectName = (projectName || 'partcopy-compose-export').trim() || 'partcopy-compose-export'
+
+  const readme = `# ${safeProjectName}
+
+PARTCOPY Compose Export です。
+
+- index.html: Compose で見えているものをそのまま出力したページ
+- assets/: 参照アセット
+
+ブラウザで \`index.html\` を開くか、静的サーバーで配信してください。
+`
+
+  const manifest = JSON.stringify({
+    projectName: safeProjectName,
+    exportedAt: new Date().toISOString(),
+    sections: preparedSections.map((section, index) => ({
+      order: index + 1,
+      sectionId: section.sectionId,
+      blockFamily: section.blockFamily,
+      scopeClass: section.scopeClass
+    })),
+    assets: {
+      totalUrls: allAssetUrls.size,
+      resolved: resolvedCount,
+      unresolved: unresolvedCount,
+      files: Object.fromEntries([...assetMap.entries()].slice(0, 500))
+    }
+  }, null, 2)
+
+  res.setHeader('Content-Type', 'application/zip')
+  res.setHeader('Content-Disposition', `attachment; filename="${safeProjectName.replace(/[^a-zA-Z0-9_-]/g, '_')}-compose.zip"`)
+
+  const archive = archiver('zip', { zlib: { level: 9 } })
+  archive.on('error', (err: Error) => {
+    logger.error('Compose ZIP export archiver error', { error: err.message })
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message })
+    } else {
+      res.end()
+    }
+  })
+
+  archive.pipe(res)
+  archive.append(html, { name: 'index.html' })
+  archive.append(readme, { name: 'README.md' })
+  archive.append(manifest, { name: 'specs/compose.json' })
+  archive.append(PLACEHOLDER_SVG, { name: 'assets/placeholder.svg' })
+
+  for (const [fileName, buffer] of assetBuffers) {
+    archive.append(buffer, { name: `assets/${fileName}` })
+  }
+
+  await archive.finalize()
+}
+
 async function prepareSectionRender(sectionId: string): Promise<PreparedSectionRender | null> {
   const record = await getRenderContext(sectionId)
   if (!record?.section) return null
@@ -402,6 +719,35 @@ async function prepareSectionRender(sectionId: string): Promise<PreparedSectionR
     html: stripVideoElements(scopeHtmlInlineVars(resolveRelativeUrls(html, pageOrigin), scopeClass)),
     css: scopedCss,
     fontFaceCss
+  }
+}
+
+/**
+ * Source モード用: CSS スコープなし・変数リネームなし・BASE_CSS なし。
+ * iframe 個別表示なので CSS 衝突の心配がなく、元サイトの見た目を最大限保つ。
+ */
+async function prepareSectionRenderRaw(sectionId: string): Promise<PreparedSectionRender | null> {
+  const record = await getRenderContext(sectionId)
+  if (!record?.section) return null
+  if (!record.section.raw_html_storage_path && !record.section.sanitized_html_storage_path) return null
+
+  let html = await readBucketText(STORAGE_BUCKETS.RAW_HTML, record.section.raw_html_storage_path)
+  if (!html) {
+    html = await readBucketText(STORAGE_BUCKETS.SANITIZED_HTML, record.section.sanitized_html_storage_path)
+  }
+  if (!html) return null
+
+  const pageOrigin = getPageOrigin(record.page?.url)
+  const scopeClass = createSectionScopeClass(sectionId)
+  const cssBundle = await loadSectionCssBundle(record.page?.css_bundle_path)
+
+  return {
+    sectionId,
+    blockFamily: record.section.block_family || 'section',
+    scopeClass,
+    html: stripVideoElements(resolveRelativeUrls(html, pageOrigin)),
+    css: cssBundle,
+    fontFaceCss: []
   }
 }
 
@@ -1443,19 +1789,17 @@ app.get('/api/sections/:sectionId/thumbnail', async (req, res) => {
 app.get('/api/sections/:sectionId/render', async (req, res) => {
   const { sectionId } = req.params
   try {
-    const prepared = await prepareSectionRender(sectionId)
+    // Source モード: CSS スコープなし — iframe 個別表示なので衝突しない。
+    // 元サイトの CSS をそのまま適用し、見た目を最大限保つ。
+    const prepared = await prepareSectionRenderRaw(sectionId)
     if (!prepared) {
       res.status(404).send('Section not found')
       return
     }
 
-    const html = buildRenderDocument(renderPreparedSection(prepared), '', {
+    const html = buildRenderDocument(prepared.html, '', {
       skipBase: true,
-      extraHead: buildStyleTags([
-        PARTCOPY_BASE_CSS,
-        ...prepared.fontFaceCss,
-        prepared.css
-      ])
+      extraHead: buildStyleTags([SOURCE_RESET_CSS, prepared.css])
     })
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
@@ -1500,6 +1844,81 @@ app.get('/api/preview/merged', async (req, res) => {
     res.send(html)
   } catch (err: any) {
     res.status(500).send('Merged preview failed')
+  }
+})
+
+// ============================================================
+// Compose: Merged sections with Panasonic-anchor normalization
+// ============================================================
+app.get('/api/compose/merged', async (req, res) => {
+  const sectionIds = parseSectionIdsQuery(req.query.sections)
+  if (sectionIds.length === 0) {
+    res.status(400).json({ error: 'sections query is required' })
+    return
+  }
+
+  const mode = req.query.mode as string | undefined
+
+  try {
+    const preparedSections = (
+      await Promise.all(sectionIds.map((sectionId) => prepareSectionRender(sectionId)))
+    ).filter((section): section is PreparedSectionRender => Boolean(section))
+
+    if (preparedSections.length === 0) {
+      res.status(404).send('No sections found')
+      return
+    }
+
+    const { html } = buildComposeDocument(preparedSections, undefined, {
+      skipNormalize: mode === 'preserve',
+      rawConcat: mode === 'preserve'
+    })
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.send(html)
+  } catch (err: any) {
+    res.status(500).send('Compose merged failed')
+  }
+})
+
+// ============================================================
+// Raw Concat: Source そのまま縦連結（内部CSS/HTML一切不変）
+// ============================================================
+app.get('/api/rawconcat/merged', async (req, res) => {
+  const sectionIds = parseSectionIdsQuery(req.query.sections)
+  if (sectionIds.length === 0) {
+    res.status(400).json({ error: 'sections query is required' })
+    return
+  }
+
+  try {
+    const preparedSections = (
+      await Promise.all(sectionIds.map((sectionId) => prepareSectionRender(sectionId)))
+    ).filter((section): section is PreparedSectionRender => Boolean(section))
+
+    if (preparedSections.length === 0) {
+      res.status(404).send('No sections found')
+      return
+    }
+
+    // セクションのHTML/CSSをそのまま連結。PARTCOPY_BASE_CSSは適用しない
+    const mergedHtml = preparedSections
+      .map((s) => `<div class="${s.scopeClass}">${s.html}</div>`)
+      .join('\n')
+    const mergedCss = preparedSections.map((s) => s.css)
+    const mergedFontFaces = dedupeCssBlocks(preparedSections.flatMap((s) => s.fontFaceCss))
+
+    const html = buildRenderDocument(mergedHtml, '', {
+      skipBase: true,
+      extraHead: buildStyleTags([RAWCONCAT_MINIMAL_CSS, ...mergedFontFaces, ...mergedCss])
+    })
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.send(html)
+  } catch (err: any) {
+    res.status(500).send('Raw concat merged failed')
   }
 })
 
@@ -2636,6 +3055,34 @@ app.post('/api/export/tsx-zip', async (req, res) => {
     }, res)
   } catch (err: any) {
     logger.error('TSX ZIP export failed', { error: err.message })
+    if (!res.headersSent) {
+      res.status(500).json({ error: safeErrorMessage(err) })
+    }
+  }
+})
+
+// ============================================================
+// Compose ZIP Export (what Compose shows = final output)
+// ============================================================
+app.post('/api/export/compose-zip', async (req, res) => {
+  const { sectionIds, projectName, mode } = req.body as {
+    sectionIds: string[]
+    projectName?: string
+    mode?: string
+  }
+
+  if (!sectionIds || !Array.isArray(sectionIds) || sectionIds.length === 0) {
+    res.status(400).json({ error: 'sectionIds array required' })
+    return
+  }
+
+  try {
+    await streamComposeZipExport(sectionIds, projectName, res, {
+      skipNormalize: mode === 'preserve' || mode === 'rawconcat',
+      rawConcat: mode === 'preserve' || mode === 'rawconcat'
+    })
+  } catch (err: any) {
+    logger.error('Compose ZIP export failed', { error: err.message })
     if (!res.headersSent) {
       res.status(500).json({ error: safeErrorMessage(err) })
     }

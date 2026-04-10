@@ -19,7 +19,7 @@ const DEVICE_WIDTHS: Record<DeviceMode, number> = {
 
 interface Props {
   items: CanvasItem[]
-  onExportZip?: (mode?: 'tsx' | 'screenshot') => void
+  onExportZip?: (mode?: 'tsx' | 'screenshot' | 'compose') => void
   exporting?: boolean
   exportProgress?: { message: string; current?: number; total?: number; sectionName?: string; estimate?: string } | null
 }
@@ -36,7 +36,7 @@ export function Preview({ items, onExportZip, exporting, exportProgress }: Props
     )
   }
 
-  const mergedHtmlUrl = `/api/preview/merged?sections=${encodeURIComponent(
+  const mergedHtmlUrl = `/api/rawconcat/merged?sections=${encodeURIComponent(
     items.map(item => item.section.id).join(',')
   )}`
 

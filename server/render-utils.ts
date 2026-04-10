@@ -443,9 +443,10 @@ export function scopeHtmlInlineVars(html: string, scopeClass: string): string {
   const hash = scopeClass.replace('pc-sec-', '').slice(0, 8)
   const prefix = `--pc-${hash}-`
 
-  // style属性内の var(--xxx) を書き換え
+  // style属性内の var(--xxx) を書き換え — フレームワーク変数は除外
   return html.replace(/style=(["'])([\s\S]*?)\1/gi, (match, quote, styleContent) => {
     const rewritten = styleContent.replace(/var\(\s*(--[\w-]+)/g, (_m: string, varName: string) => {
+      if (isFrameworkVar(varName)) return `var(${varName}`
       return `var(${prefix}${varName.slice(2)}`
     })
     if (rewritten === styleContent) return match
@@ -623,15 +624,34 @@ function selectorMatchesTokens(selectorText: string, tokens: { classes: Set<stri
   return false
 }
 
+// フレームワーク由来のCSS変数プレフィックス — これらはリネームすると壊れる
+const FRAMEWORK_VAR_PREFIXES = [
+  '--tw-',       // Tailwind CSS
+  '--bs-',       // Bootstrap
+  '--chakra-',   // Chakra UI
+  '--mantine-',  // Mantine
+  '--mdc-',      // Material Design Components
+  '--wp-',       // WordPress
+  '--wc-',       // Web Components (Lit, etc.)
+  '--sl-',       // Shoelace
+  '--spectrum-', // Adobe Spectrum
+]
+
+function isFrameworkVar(varName: string): boolean {
+  return FRAMEWORK_VAR_PREFIXES.some(p => varName.startsWith(p))
+}
+
 function scopeCssVariables(css: string, scopeClass: string): string {
   // scopeClassからハッシュ部分を抽出（pc-sec-xxxx → xxxx の先頭8文字）
   const hash = scopeClass.replace('pc-sec-', '').slice(0, 8)
   const prefix = `--pc-${hash}-`
 
-  // 変数を収集（宣言側）
+  // 変数を収集（宣言側）— フレームワーク変数は除外
   const varNames = new Set<string>()
   css.replace(/(--[\w-]+)\s*:/g, (_m, name) => {
-    varNames.add(name)
+    if (!isFrameworkVar(name)) {
+      varNames.add(name)
+    }
     return _m
   })
 

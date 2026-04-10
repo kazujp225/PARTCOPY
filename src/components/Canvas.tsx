@@ -4,6 +4,7 @@ import { SourcePreviewFrame } from './SourcePreviewFrame'
 import { EditableSourceFrame, type SelectedNode } from './EditableSourceFrame'
 import { NodeInspector } from './NodeInspector'
 import { CodeEditor } from './CodeEditor'
+import { ComposeWorkbench } from './ComposeWorkbench'
 import { FAMILY_COLORS } from '../constants'
 
 interface CanvasItem {
@@ -17,15 +18,33 @@ interface Props {
   onMove: (from: number, to: number) => void
   onViewTsx?: (sectionId: string) => void
   onDesignEdit?: (sectionId: string, familyName?: string) => void
-  onExportZip?: (mode?: 'tsx' | 'screenshot') => void
+  onExportZip?: (mode?: 'tsx' | 'screenshot' | 'compose') => void
   exporting?: boolean
   exportProgress?: { message: string; current?: number; total?: number; sectionName?: string; estimate?: string } | null
   onSaveProject?: () => void
   onNewProject?: () => void
   designEditedSections?: Record<string, number>
+  editorMode?: 'source' | 'rawconcat' | 'preserve' | 'styled'
+  onEditorModeChange?: (mode: 'source' | 'rawconcat' | 'preserve' | 'styled') => void
+  projectName?: string
 }
 
-export function Canvas({ items, onRemove, onMove, onViewTsx, onDesignEdit, onExportZip, exporting, exportProgress, onSaveProject, onNewProject, designEditedSections }: Props) {
+export function Canvas({
+  items,
+  onRemove,
+  onMove,
+  onViewTsx,
+  onDesignEdit,
+  onExportZip,
+  exporting,
+  exportProgress,
+  onSaveProject,
+  onNewProject,
+  designEditedSections,
+  editorMode = 'source',
+  onEditorModeChange,
+  projectName
+}: Props) {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const dragRef = useRef<number | null>(null)
@@ -86,7 +105,35 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onDesignEdit, onExp
     <div className="canvas-with-inspector">
       <main className="canvas">
         <div className="canvas-header">
-          <h2>Canvas ({items.length} ブロック)</h2>
+          <div className="canvas-header-main">
+            <h2>Canvas ({items.length} ブロック)</h2>
+            <div className="canvas-mode-switch">
+              <button
+                className={`canvas-mode-btn ${editorMode === 'source' ? 'active' : ''}`}
+                onClick={() => onEditorModeChange?.('source')}
+              >
+                Source
+              </button>
+              <button
+                className={`canvas-mode-btn ${editorMode === 'rawconcat' ? 'active' : ''}`}
+                onClick={() => onEditorModeChange?.('rawconcat')}
+              >
+                Raw Concat
+              </button>
+              <button
+                className={`canvas-mode-btn ${editorMode === 'preserve' ? 'active' : ''}`}
+                onClick={() => onEditorModeChange?.('preserve')}
+              >
+                Preserve
+              </button>
+              <button
+                className={`canvas-mode-btn ${editorMode === 'styled' ? 'active' : ''}`}
+                onClick={() => onEditorModeChange?.('styled')}
+              >
+                Styled
+              </button>
+            </div>
+          </div>
           <div className="canvas-header-actions">
             {onNewProject && (
               <button className="canvas-new-btn" onClick={onNewProject}>+ 新規作成</button>
@@ -96,8 +143,12 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onDesignEdit, onExp
             )}
             {onExportZip && items.length > 0 && (
               <div className="zip-export-group">
-                <button className="zip-btn primary" onClick={() => onExportZip('tsx')} disabled={exporting}>
-                  {exporting ? '出力中...' : '↓ TSX ZIP Export'}
+                <button
+                  className="zip-btn primary"
+                  onClick={() => onExportZip(editorMode === 'rawconcat' || editorMode === 'preserve' || editorMode === 'styled' ? 'compose' : 'tsx')}
+                  disabled={exporting}
+                >
+                  {exporting ? '出力中...' : editorMode === 'rawconcat' || editorMode === 'preserve' || editorMode === 'styled' ? '↓ ZIP Export' : '↓ TSX ZIP Export'}
                 </button>
                 <button className="zip-btn" onClick={() => onExportZip('screenshot')} disabled={exporting} style={{ marginLeft: 4, fontSize: '0.8em', opacity: 0.7 }}>
                   スクショ版
@@ -142,6 +193,9 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onDesignEdit, onExp
             </div>
           </div>
         )}
+        {editorMode === 'rawconcat' || editorMode === 'preserve' || editorMode === 'styled' ? (
+          <ComposeWorkbench items={items} projectName={projectName} mode={editorMode} />
+        ) : (
         <div className="canvas-blocks">
           {items.map((item, i) => {
             const sectionDesignKey = designEditedSections?.[item.section.id] || 0
@@ -234,6 +288,7 @@ export function Canvas({ items, onRemove, onMove, onViewTsx, onDesignEdit, onExp
             )
           })}
         </div>
+        )}
       </main>
 
       {editingIndex !== null && editingItem && (
